@@ -2,10 +2,10 @@ package gg.seam.mod
 
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
+import gg.seam.mod.screen.NotebookScreen
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
 import net.minecraft.client.option.KeyBinding
 import net.minecraft.client.util.InputUtil
-import net.minecraft.text.Text
 import net.minecraft.util.Identifier
 import org.lwjgl.glfw.GLFW
 import org.slf4j.LoggerFactory
@@ -39,11 +39,7 @@ object SeamClient : ClientModInitializer {
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             while (openNotebookKey.wasPressed()) {
-                // Phase 1: client.setScreen(NotebookScreen())
-                logger.info("Notebook keybind pressed")
-                client.inGameHud?.chatHud?.addMessage(
-                    Text.literal("[Seam] Notebook keybind works — UI arrives in Phase 1."),
-                )
+                client.setScreen(NotebookScreen())
             }
         }
 

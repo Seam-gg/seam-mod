@@ -117,6 +117,7 @@ Assets: `models/item/notebook.json` (`item/generated` + `layer0`), **`items/note
 ## 4. Notebook GUI (custom `Screen`) — verified vs `yarn 1.21.11+build.3`
 
 - Subclass `net.minecraft.client.gui.screen.Screen`. Build widgets in `init()` (not the constructor — `width`/`height` valid only there; re-called on resize). `render(DrawContext, mouseX, mouseY, delta)`; `shouldPause() = false` to keep the world live; `close()` → `client?.setScreen(parent)`. Open via `MinecraftClient.getInstance().setScreen(NotebookScreen())`.
+  - ⚠ **1.21.11 gotcha (verified by crash): do NOT call `renderBackground()` inside your `render()`.** The framework now applies the screen backdrop (a blur) *before* invoking `render()`, and the blur may only be applied once per frame — a manual `renderBackground()` call throws `IllegalStateException: Can only blur once per frame`. Draw your panel/content directly, and render widgets on top yourself (`for (e in children()) (e as? Drawable)?.render(...)`) rather than relying on the old `super.render()` background pass.
 - **`DrawContext` (verified 1.21.11):**
   - Text: `drawText(textRenderer, str/Text, x, y, colorARGB, shadow)` / `drawTextWithShadow(...)`. **Color is ARGB — set alpha (`0xFF……`) or text is invisible.** Measure with `textRenderer.getWidth(...)`, row height `textRenderer.fontHeight`.
   - Rectangles / progress bars: **5-arg `fill(x1,y1,x2,y2,colorARGB)`** — all we need. Also `drawHorizontalLine`/`drawVerticalLine`. ⚠ **`drawBorder` is NOT present** — draw 4 fills.

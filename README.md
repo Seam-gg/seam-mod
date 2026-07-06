@@ -31,8 +31,15 @@ On WSL2 the dev client is unusably slow (sub-1 fps) out of the box — two fixes
 2. **Sodium** (already wired as `modLocalRuntime` in `build.gradle.kts`) — batches draw calls so
    the d3d12 translation overhead doesn't tank framerate. GPU-on alone is *not* enough; Minecraft's
    per-draw-call overhead still crushes it without Sodium.
+3. **Fix audio** (prevents an OpenAL shutdown-watchdog crash). WSLg provides working PulseAudio, but
+   Minecraft's OpenAL Soft doesn't select it by default — it fails to open a device, then hangs
+   destroying the dead context on close. Force the PulseAudio backend:
+   ```sh
+   echo 'export ALSOFT_DRIVERS=pulse' >> ~/.bashrc && source ~/.bashrc
+   ```
 
-With both, `./gradlew runClient` runs at full speed. (Verified on an RTX 3080 Ti.)
+With `GALLIUM_DRIVER=d3d12` + Sodium + `ALSOFT_DRIVERS=pulse`, `./gradlew runClient` runs at full
+speed with working sound and clean shutdown. (Verified on an RTX 3080 Ti.)
 
 ## Docs
 
