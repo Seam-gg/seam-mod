@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "seam",
+  "version": "${version}",
+  "name": "Seam Companion",
+  "description": "In-game companion for the Seam webapp — resource tracking, container tagging, and task check-off. Client-only (v1).",
+  "authors": ["Even Gultvedt"],
+  "contact": {
+    "homepage": "https://app.seam.gg"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      {
+        "adapter": "kotlin",
+        "value": "gg.seam.mod.SeamClient"
+      }
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*",
+    "fabric-language-kotlin": ">=1.13.12+kotlin.2.4.0"
+  }
+}
