@@ -4,6 +4,7 @@ import gg.seam.mod.data.PlaceholderData
 import gg.seam.mod.data.SampleContainer
 import gg.seam.mod.data.SampleResource
 import gg.seam.mod.data.SampleTask
+import gg.seam.mod.data.WorldDataStore
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.gui.screen.Screen
 import net.minecraft.client.gui.widget.ButtonWidget
@@ -44,6 +45,11 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
     private lateinit var projectButton: ButtonWidget
     private lateinit var closeButton: ButtonWidget
     private val taskButtons = mutableListOf<ButtonWidget>()
+
+    // Five batch buttons per resource ([-1][-64] left, [+1][+64][+1728] right), parallel to
+    // project.resources. Y is set per-frame in render() as the body scrolls (like taskButtons);
+    // X/width are fixed here in init().
+    private val batchButtons = mutableListOf<List<ButtonWidget>>()
 
     override fun init() {
         val p = project
@@ -90,6 +96,34 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
             )
         }
 
+        // batch counter buttons live on the resource row's second line: minus cluster left-aligned
+        // (small indent), plus cluster right-aligned to contentR. X/width fixed here; Y set per-frame
+        // in render(). Counts persist through WorldDataStore, keyed project id → item id (MCO-272).
+        // 64 = a stack, 1728 = a double chest of stacks — deltas match the webapp.
+        val pid = p.id
+        batchButtons.clear()
+        p.resources.forEach { r ->
+            val widths = IntArray(BATCH_DELTAS.size) { textRenderer.getWidth(batchLabel(BATCH_DELTAS[it])) + BTN_PAD_X * 2 }
+            val xs = IntArray(BATCH_DELTAS.size)
+            // minus cluster: [-1][-64] left-aligned at contentX + 8
+            xs[0] = contentX + 8
+            xs[1] = xs[0] + widths[0] + BTN_GAP
+            // plus cluster: [+1][+64][+1728] right-aligned to contentR
+            xs[2] = contentR - (widths[2] + widths[3] + widths[4] + 2 * BTN_GAP)
+            xs[3] = xs[2] + widths[2] + BTN_GAP
+            xs[4] = xs[3] + widths[3] + BTN_GAP
+            batchButtons += BATCH_DELTAS.mapIndexed { idx, delta ->
+                addDrawableChild(
+                    ButtonWidget.builder(Text.literal(batchLabel(delta))) {
+                        // read + write inside the transform so the update is atomic; clamp ≥ 0.
+                        WorldDataStore.update { d ->
+                            d.withCount(pid, r.itemId, (d.count(pid, r.itemId) + delta).coerceAtLeast(0))
+                        }
+                    }.dimensions(xs[idx], 0, widths[idx], BATCH_BTN).build(),
+                )
+            }
+        }
+
         contentHeight = (LINE + 4) + p.resources.size * RES_ROW + GAP +
             (LINE + 4) + p.tasks.size * TASK_ROW + GAP +
             (LINE + 4) + p.containers.size * CON_ROW
@@ -118,7 +152,17 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
         context.enableScissor(left + 1, bodyTop, left + panelW - 1, bodyBottom)
         var cy = bodyTop - scroll
         cy = sectionHeader(context, "RESOURCES", cy)
-        p.resources.forEach { r -> drawResource(context, r, cy); cy += RES_ROW }
+        p.resources.forEachIndexed { i, r ->
+            drawResource(context, p.id, r, cy)
+            // batch buttons sit on the row's second line; gate .active to the whole row being visible.
+            val visible = cy >= bodyTop && cy + RES_ROW <= bodyBottom
+            batchButtons[i].forEach { b ->
+                b.y = cy + TOP_H
+                b.active = visible
+                b.render(context, mouseX, mouseY, delta)
+            }
+            cy += RES_ROW
+        }
         cy += GAP
         cy = sectionHeader(context, "TASKS", cy)
         p.tasks.forEachIndexed { i, _ ->
@@ -168,19 +212,28 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
         return y + LINE + 4
     }
 
-    private fun drawResource(context: DrawContext, r: SampleResource, y: Int) {
-        context.drawText(textRenderer, r.name, contentX, y, if (r.complete) C_DISABLED else C_INK, false)
+    private fun drawResource(context: DrawContext, projectId: String, r: SampleResource, y: Int) {
+        // Live count comes from the manual-count store (MCO-272), not a static seed. Phase 2 scanning
+        // will restore the player/storage breakdown that used to live here.
+        val have = WorldDataStore.current.count(projectId, r.itemId)
+        val complete = have >= r.need
+        val progress = if (r.need == 0) 1f else (have.toFloat() / r.need).coerceIn(0f, 1f)
+        // top line: name (left), bar, count (right) all share a vertical center within TOP_H so the
+        // 6px bar and the text baseline line up (the batch button row follows below).
+        val centerY = y + TOP_H / 2
+        val textY = centerY - textRenderer.fontHeight / 2
+        val barTop = centerY - 3
+        context.drawText(textRenderer, r.name, contentX, textY, if (complete) C_DISABLED else C_INK, false)
         val barX = contentX + 96
         val barW = 84
-        context.fill(barX, y + 1, barX + barW, y + 7, C_TRACK)
-        val fw = (barW * r.progress).toInt()
-        if (fw > 0) context.fill(barX, y + 1, barX + fw, y + 7, if (r.complete) C_GREEN else C_LAPIS)
-        val count = "${r.have} / ${r.need}"
+        context.fill(barX, barTop, barX + barW, barTop + 6, C_TRACK)
+        val fw = (barW * progress).toInt()
+        if (fw > 0) context.fill(barX, barTop, barX + fw, barTop + 6, if (complete) C_GREEN else C_LAPIS)
+        val count = "$have / ${r.need}"
         context.drawText(
-            textRenderer, count, contentR - textRenderer.getWidth(count), y,
-            if (r.complete) C_GREEN else C_INK, false,
+            textRenderer, count, contentR - textRenderer.getWidth(count), textY,
+            if (complete) C_GREEN else C_INK, false,
         )
-        context.drawText(textRenderer, "Player ${r.player}   Storage ${r.storage}", contentX + 8, y + 11, C_MUTED, false)
     }
 
     private fun drawContainer(context: DrawContext, c: SampleContainer, y: Int) {
@@ -192,6 +245,9 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
     private fun taskLabel(t: SampleTask): Text =
         Text.literal((if (t.done) "[x] " else "[ ] ") + t.name)
 
+    /** Signed label for a batch button: "+1", "+64", "+1728", "-1", "-64" (negatives keep their sign). */
+    private fun batchLabel(delta: Int): String = if (delta >= 0) "+$delta" else "$delta"
+
     override fun shouldPause(): Boolean = false
 
     override fun close() {
@@ -202,7 +258,12 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
         const val PAD = 14
         const val LINE = 10
         const val BTN = 20
-        const val RES_ROW = 22
+        const val TOP_H = 13 // top line height (name / bar / count) above the batch button row
+        const val BATCH_BTN = 16 // shorter height for the batch [-1]…[+1728] buttons
+        const val BTN_PAD_X = 5 // horizontal padding added to each batch button's label width
+        const val BTN_GAP = 3 // gap between adjacent batch buttons
+        val BATCH_DELTAS = intArrayOf(-1, -64, 1, 64, 1728)
+        const val RES_ROW = 34 // TOP_H (13) + BATCH_BTN (16) + trailing pad
         const val TASK_ROW = 22
         const val CON_ROW = 12
         const val GAP = 6
