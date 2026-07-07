@@ -2,6 +2,10 @@ package gg.seam.mod
 
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
+import gg.seam.mod.data.ConfigStore
+import gg.seam.mod.data.WorldDataStore
+import gg.seam.mod.data.WorldKey
 import gg.seam.mod.screen.NotebookScreen
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
 import net.minecraft.client.option.KeyBinding
@@ -41,6 +45,22 @@ object SeamClient : ClientModInitializer {
             while (openNotebookKey.wasPressed()) {
                 client.setScreen(NotebookScreen())
             }
+        }
+
+        // Persistence (MCO-258): load global config once; bind/unbind per-world data on connect.
+        ConfigStore.loadAsync()
+
+        ClientPlayConnectionEvents.JOIN.register { _, _, client ->
+            val key = WorldKey.forCurrent(client)
+            if (key == null) {
+                logger.warn("Joined a world but could not resolve a WorldKey; per-world data disabled")
+            } else {
+                WorldDataStore.loadAsync(key)
+            }
+        }
+
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
+            WorldDataStore.unload()
         }
 
         logger.info("Seam Companion (client) initialized")
