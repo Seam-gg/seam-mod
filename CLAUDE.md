@@ -35,10 +35,24 @@ snapshot / Mojmap model that does not match 1.21.11 Yarn.
   at runtime — `compileOnly`, never bundle). Marshal results back to the client thread with
   `MinecraftClient.getInstance().execute { }`.
 
-## Backend prerequisites (mc-org, not here)
+## Backend (mc-org, not here)
 
-Sync depends on two mc-org endpoints that do not exist yet: **MCO-235** (read-only JSON API) and
-**MCO-236** (device-code auth). Phases 0–3 of this mod need no backend and can proceed in parallel.
+The sync backend **has landed**: **MCO-235** (read-only JSON API) + **MCO-236** (device-code auth)
+shipped in mc-org as `472ce89`. The contract lives in
+`mc-org/webapp/mc-web/src/main/kotlin/app/mcorg/api/ApiDtos.kt` — snake_case, `/api/v1`, bearer
+token. `gg.seam.mod.api.ApiModels` is the client half of that same contract; **change the two
+together.** Endpoints: `POST /auth/device-code`, `POST /auth/device-code/poll`,
+`DELETE /auth/token`, `GET /worlds`, `GET /worlds/{id}/projects`,
+`POST /projects/{id}/resources/sync`, `PUT /projects/{id}/tasks/{id}`.
+
+Point the mod at a local webapp with `-Dseam.apiBaseUrl=http://localhost:8080` (or
+`SEAM_API_BASE_URL`); default is `https://app.seam.gg`. See `gg.seam.mod.api.SeamApi`.
+
+## Tests
+
+`./gradlew test` — JUnit 5 over the Minecraft-free half (wire models, `SeamApiClient` against a
+loopback `com.sun.net.httpserver`, the device-code poll policy). Anything touching `MinecraftClient`
+can't be unit-tested here; that's `runClient` territory.
 
 ## Workspace rules
 
