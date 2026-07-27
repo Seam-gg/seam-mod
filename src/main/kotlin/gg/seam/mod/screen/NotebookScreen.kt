@@ -62,7 +62,7 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
 
         // ---- fixed header ----
         settingsButton = addDrawableChild(
-            ButtonWidget.builder(Text.literal("Settings")) { /* TODO MCO-257 */ }
+            ButtonWidget.builder(Text.literal("Settings")) { client?.setScreen(SettingsScreen(this)) }
                 .dimensions(contentR - 64, top + 6, 64, BTN).build(),
         )
         val projectBtnY = top + 28
@@ -136,15 +136,15 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
         val p = project
 
         // panel + border
-        context.fill(left, top, left + panelW, top + panelH, C_PANEL)
-        context.fill(left, top, left + panelW, top + 1, C_BORDER)
-        context.fill(left, top + panelH - 1, left + panelW, top + panelH, C_BORDER)
-        context.fill(left, top, left + 1, top + panelH, C_BORDER)
-        context.fill(left + panelW - 1, top, left + panelW, top + panelH, C_BORDER)
+        context.fill(left, top, left + panelW, top + panelH, SeamPalette.PANEL)
+        context.fill(left, top, left + panelW, top + 1, SeamPalette.BORDER)
+        context.fill(left, top + panelH - 1, left + panelW, top + panelH, SeamPalette.BORDER)
+        context.fill(left, top, left + 1, top + panelH, SeamPalette.BORDER)
+        context.fill(left + panelW - 1, top, left + panelW, top + panelH, SeamPalette.BORDER)
 
         // fixed header
-        context.drawText(textRenderer, "SEAM NOTEBOOK", contentX, top + 12, C_INK, false)
-        context.drawText(textRenderer, "Status: ${p.status}", contentX, statusY, C_MUTED, false)
+        context.drawText(textRenderer, "SEAM NOTEBOOK", contentX, top + 12, SeamPalette.INK, false)
+        context.drawText(textRenderer, "Status: ${p.status}", contentX, statusY, SeamPalette.MUTED, false)
         settingsButton.render(context, mouseX, mouseY, delta)
         projectButton.render(context, mouseX, mouseY, delta)
 
@@ -180,15 +180,15 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
         // scrollbar
         if (maxScroll > 0) {
             val trackX = left + panelW - 5
-            context.fill(trackX, bodyTop, trackX + 2, bodyBottom, C_TRACK)
+            context.fill(trackX, bodyTop, trackX + 2, bodyBottom, SeamPalette.TRACK)
             val viewH = bodyBottom - bodyTop
             val thumbH = maxOf(16, viewH * viewH / contentHeight)
             val thumbY = bodyTop + (viewH - thumbH) * scroll / maxScroll
-            context.fill(trackX, thumbY, trackX + 2, thumbY + thumbH, C_LAPIS)
+            context.fill(trackX, thumbY, trackX + 2, thumbY + thumbH, SeamPalette.LAPIS)
         }
 
         // fixed footer
-        context.drawText(textRenderer, "Last synced: — (offline placeholder)", contentX, syncTextY, C_MUTED, false)
+        context.drawText(textRenderer, "Last synced: — (offline placeholder)", contentX, syncTextY, SeamPalette.MUTED, false)
         closeButton.render(context, mouseX, mouseY, delta)
     }
 
@@ -207,8 +207,8 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
 
     /** Draws a section header + underline at [y]; returns the y below it. */
     private fun sectionHeader(context: DrawContext, label: String, y: Int): Int {
-        context.drawText(textRenderer, label, contentX, y, C_LAPIS, false)
-        context.fill(contentX, y + 10, contentR, y + 11, C_BORDER)
+        context.drawText(textRenderer, label, contentX, y, SeamPalette.LAPIS, false)
+        context.fill(contentX, y + 10, contentR, y + 11, SeamPalette.BORDER)
         return y + LINE + 4
     }
 
@@ -223,23 +223,23 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
         val centerY = y + TOP_H / 2
         val textY = centerY - textRenderer.fontHeight / 2
         val barTop = centerY - 3
-        context.drawText(textRenderer, r.name, contentX, textY, if (complete) C_DISABLED else C_INK, false)
+        context.drawText(textRenderer, r.name, contentX, textY, if (complete) SeamPalette.DISABLED else SeamPalette.INK, false)
         val barX = contentX + 96
         val barW = 84
-        context.fill(barX, barTop, barX + barW, barTop + 6, C_TRACK)
+        context.fill(barX, barTop, barX + barW, barTop + 6, SeamPalette.TRACK)
         val fw = (barW * progress).toInt()
-        if (fw > 0) context.fill(barX, barTop, barX + fw, barTop + 6, if (complete) C_GREEN else C_LAPIS)
+        if (fw > 0) context.fill(barX, barTop, barX + fw, barTop + 6, if (complete) SeamPalette.GREEN else SeamPalette.LAPIS)
         val count = "$have / ${r.need}"
         context.drawText(
             textRenderer, count, contentR - textRenderer.getWidth(count), textY,
-            if (complete) C_GREEN else C_INK, false,
+            if (complete) SeamPalette.GREEN else SeamPalette.INK, false,
         )
     }
 
     private fun drawContainer(context: DrawContext, c: SampleContainer, y: Int) {
-        context.drawText(textRenderer, "${c.type} @ ${c.x}, ${c.y}, ${c.z}", contentX, y, C_INK, false)
+        context.drawText(textRenderer, "${c.type} @ ${c.x}, ${c.y}, ${c.z}", contentX, y, SeamPalette.INK, false)
         val count = "${c.items} items"
-        context.drawText(textRenderer, count, contentR - textRenderer.getWidth(count), y, C_MUTED, false)
+        context.drawText(textRenderer, count, contentR - textRenderer.getWidth(count), y, SeamPalette.MUTED, false)
     }
 
     private fun taskLabel(t: SampleTask): Text =
@@ -269,15 +269,5 @@ class NotebookScreen(private val projectIndex: Int = 0) : Screen(Text.literal("S
         const val GAP = 6
         const val FOOTER_H = 26
         const val SCROLL_STEP = 14
-
-        // Daylight Field Notebook tokens (ARGB — alpha required or text is invisible)
-        const val C_PANEL = 0xFFFBF7EC.toInt()
-        const val C_BORDER = 0xFF8A8069.toInt()
-        const val C_INK = 0xFF2E2A24.toInt()
-        const val C_MUTED = 0xFF7A7263.toInt()
-        const val C_LAPIS = 0xFF2B5B8C.toInt()
-        const val C_GREEN = 0xFF2F8F5B.toInt()
-        const val C_TRACK = 0xFFD8CDBA.toInt()
-        const val C_DISABLED = 0xFFB4AC9C.toInt()
     }
 }

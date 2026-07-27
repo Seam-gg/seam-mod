@@ -38,8 +38,36 @@ On WSL2 the dev client is unusably slow (sub-1 fps) out of the box — two fixes
    echo 'export ALSOFT_DRIVERS=pulse' >> ~/.bashrc && source ~/.bashrc
    ```
 
+4. **Turn off Raw Input** (Options → Controls → Mouse Settings → Raw Input: OFF). WSLg's raw mouse
+   motion isn't scaled by Minecraft's sensitivity slider, so the camera whips around no matter how
+   far down you drag it — dragging sensitivity to the floor doesn't help, because the slider isn't
+   in the path. With raw input off, GLFW's ordinary cursor-position path is used and sensitivity
+   behaves normally (put it back to ~100% afterwards). In `run/options.txt`:
+   `rawMouseInput:false`. Edit it only while the client is **closed** — Minecraft rewrites the file
+   on exit.
+5. **Install `wslview`** (`sudo apt install wslu`) if it's missing. Vanilla's "open link in browser"
+   runs `xdg-open`, which a bare WSL distro doesn't have; the mod falls back to `wslview` /
+   `explorer.exe` (see `gg.seam.mod.util.Browser`), so at least one of those must exist.
+
 With `GALLIUM_DRIVER=d3d12` + Sodium + `ALSOFT_DRIVERS=pulse`, `./gradlew runClient` runs at full
 speed with working sound and clean shutdown. (Verified on an RTX 3080 Ti.)
+
+`build.gradle.kts` also sets both variables on the `runClient` run config when it detects WSL (via
+`/proc/sys/kernel/osrelease`), so the dev client works even if the Gradle daemon was started from a
+shell without them. The `~/.bashrc` exports are still worth having — they're what `glxinfo` and any
+non-Gradle launch see.
+
+### Pointing the dev client at a webapp
+
+`runClient` defaults to `-Dseam.apiBaseUrl=http://localhost:8080` (run `mc-org` locally to link
+against it). Override per run:
+
+```sh
+./gradlew runClient -PseamApiBaseUrl=https://app.seam.gg
+```
+
+Resolution order is `-Dseam.apiBaseUrl` → `SEAM_API_BASE_URL` → `api_base_url` in
+`seam/config.json` → `https://app.seam.gg`. See `gg.seam.mod.api.SeamApi`.
 
 ## Docs
 
