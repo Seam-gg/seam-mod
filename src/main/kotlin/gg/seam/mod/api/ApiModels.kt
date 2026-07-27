@@ -81,6 +81,11 @@ data class ResourceDto(
     @SerialName("required") val required: Int,
     @SerialName("collected") val collected: Int,
     @SerialName("source_type") val sourceType: String? = null,
+    /**
+     * Which client last set [collected]: `mod` (this mod's sync) or `manual` (the web app). Added
+     * by MCO-284. Distinct from [sourceType], which is the item's acquisition type from the graph.
+     */
+    @SerialName("progress_source") val progressSource: String = "manual",
 )
 
 @Serializable

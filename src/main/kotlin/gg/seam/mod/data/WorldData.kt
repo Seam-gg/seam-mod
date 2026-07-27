@@ -17,30 +17,74 @@ import java.util.concurrent.CompletableFuture
  */
 @Serializable
 data class WorldData(
-    val version: Int = 2,
+    val version: Int = 3,
     @SerialName("seam_world_id") val seamWorldId: Int? = null,
     @SerialName("resource_counts") val resourceCounts: Map<Int, Map<String, Int>> = emptyMap(),
+    /** Projects whose local counts haven't reached Seam yet — the offline queue (MCO-269). */
+    @SerialName("pending_resource_projects") val pendingResourceProjects: Set<Int> = emptySet(),
+    /** Task toggles not yet pushed, project id → task id → desired completed state. */
+    @SerialName("pending_tasks") val pendingTasks: Map<Int, Map<Int, Boolean>> = emptyMap(),
 ) {
-    /** Manual count for [itemId] under [projectId], or 0 if unset. */
+    /** Local count for [itemId] under [projectId], or 0 if the player hasn't touched it. */
     fun count(projectId: Int, itemId: String): Int =
         resourceCounts[projectId]?.get(itemId) ?: 0
 
-    /** Copy with [itemId]'s count under [projectId] set to [value] (removes the entry when 0). */
+    /**
+     * Copy with [itemId]'s count under [projectId] set to [value], marking the project unsynced.
+     *
+     * A zero is **stored, not pruned**: the key set is the set of items the player has touched, and
+     * the sync is an absolute set. Dropping a zero would make "I emptied this" indistinguishable
+     * from "I never touched this", and the push would silently leave the old server count standing.
+     * Counts are cleared wholesale once they reach Seam ([withProjectReset]), so the file stays small.
+     */
     fun withCount(projectId: Int, itemId: String, value: Int): WorldData {
-        val items = resourceCounts[projectId].orEmpty().toMutableMap()
-        if (value <= 0) items.remove(itemId) else items[itemId] = value
-        val counts = resourceCounts.toMutableMap()
-        if (items.isEmpty()) counts.remove(projectId) else counts[projectId] = items
-        return copy(resourceCounts = counts)
+        val items = resourceCounts[projectId].orEmpty() + (itemId to value.coerceAtLeast(0))
+        return copy(
+            resourceCounts = resourceCounts + (projectId to items),
+            pendingResourceProjects = pendingResourceProjects + projectId,
+        )
     }
 
-    /** Copy with all manual counts for [projectId] cleared. */
+    /** Copy with all local counts for [projectId] cleared, and no longer queued. */
     fun withProjectReset(projectId: Int): WorldData =
-        copy(resourceCounts = resourceCounts.toMutableMap().apply { remove(projectId) })
+        copy(
+            resourceCounts = resourceCounts - projectId,
+            pendingResourceProjects = pendingResourceProjects - projectId,
+        )
 
-    /** Copy bound to Seam world [worldId]; project counts are dropped since ids are world-scoped. */
+    /** The desired state of a queued task toggle, or null when nothing is queued for it. */
+    fun pendingTask(projectId: Int, taskId: Int): Boolean? = pendingTasks[projectId]?.get(taskId)
+
+    /** Copy with a task toggle queued for pushing. */
+    fun withPendingTask(projectId: Int, taskId: Int, completed: Boolean): WorldData =
+        copy(pendingTasks = pendingTasks + (projectId to (pendingTasks[projectId].orEmpty() + (taskId to completed))))
+
+    /** Copy with a task toggle removed from the queue (it reached Seam). */
+    fun withoutPendingTask(projectId: Int, taskId: Int): WorldData {
+        val remaining = pendingTasks[projectId].orEmpty() - taskId
+        return copy(
+            pendingTasks = if (remaining.isEmpty()) pendingTasks - projectId else pendingTasks + (projectId to remaining),
+        )
+    }
+
+    /** How many queued writes are waiting — what the notebook footer reports. */
+    val queuedWrites: Int get() = pendingResourceProjects.size + pendingTasks.values.sumOf { it.size }
+
+    /**
+     * Copy bound to Seam world [worldId]. Counts and queued writes are dropped, since project and
+     * task ids are scoped to a world and would address the wrong rows under a different one.
+     */
     fun withSeamWorld(worldId: Int): WorldData =
-        if (worldId == seamWorldId) this else copy(seamWorldId = worldId, resourceCounts = emptyMap())
+        if (worldId == seamWorldId) {
+            this
+        } else {
+            copy(
+                seamWorldId = worldId,
+                resourceCounts = emptyMap(),
+                pendingResourceProjects = emptySet(),
+                pendingTasks = emptyMap(),
+            )
+        }
 }
 
 /**

@@ -5,6 +5,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import gg.seam.mod.data.ConfigStore
 import gg.seam.mod.data.SeamDataStore
+import gg.seam.mod.data.SeamSync
 import gg.seam.mod.data.WorldDataStore
 import gg.seam.mod.data.WorldKey
 import gg.seam.mod.screen.NotebookScreen
@@ -57,7 +58,11 @@ object SeamClient : ClientModInitializer {
                 logger.warn("Joined a world but could not resolve a WorldKey; per-world data disabled")
             } else {
                 // Pull only once the binding is on disk — refresh() reads seamWorldId from it.
-                WorldDataStore.loadAsync(key).thenRun { SeamDataStore.refresh() }
+                // Flush first: anything queued from a previous, offline session goes out before we
+                // pull, so the values we then render already include it.
+                WorldDataStore.loadAsync(key).thenRun {
+                    SeamSync.flush().thenRun { SeamDataStore.refresh() }
+                }
             }
         }
 
@@ -65,6 +70,7 @@ object SeamClient : ClientModInitializer {
             WorldDataStore.unload()
             // Drop the cache too, so a second world never renders the first one's projects.
             SeamDataStore.clear()
+            SeamSync.clear()
         }
 
         logger.info("Seam Companion (client) initialized")

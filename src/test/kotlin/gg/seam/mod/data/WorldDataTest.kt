@@ -29,13 +29,66 @@ class WorldDataTest {
     }
 
     @Test
-    fun `setting a count to zero removes the entry rather than storing a zero`() {
+    fun `a count set back to zero is kept, so the sync can push the zero`() {
         val data = WorldData()
             .withCount(1, "minecraft:stone", 5)
             .withCount(1, "minecraft:stone", 0)
 
         assertEquals(0, data.count(1, "minecraft:stone"))
-        assertTrue(data.resourceCounts.isEmpty(), "empty project maps should be pruned too")
+        // The key set is "items the player has touched" and the push is an absolute set. Pruning
+        // the zero would make "I emptied this" indistinguishable from "I never touched this", and
+        // the push would leave the old server count standing.
+        assertTrue(
+            data.resourceCounts.getValue(1).containsKey("minecraft:stone"),
+            "a zeroed item must stay in the payload",
+        )
+    }
+
+    @Test
+    fun `editing a count queues the project for sync`() {
+        val data = WorldData().withCount(3, "minecraft:stone", 5)
+
+        assertEquals(setOf(3), data.pendingResourceProjects)
+        assertEquals(1, data.queuedWrites)
+    }
+
+    @Test
+    fun `a synced project drops both its counts and its queue entry`() {
+        val data = WorldData().withCount(3, "minecraft:stone", 5).withProjectReset(3)
+
+        assertTrue(data.resourceCounts.isEmpty())
+        assertTrue(data.pendingResourceProjects.isEmpty())
+        assertEquals(0, data.queuedWrites)
+    }
+
+    @Test
+    fun `queued task toggles round-trip and clear individually`() {
+        val data = WorldData()
+            .withPendingTask(1, 10, completed = true)
+            .withPendingTask(1, 11, completed = false)
+
+        assertEquals(true, data.pendingTask(1, 10))
+        assertEquals(false, data.pendingTask(1, 11))
+        assertEquals(2, data.queuedWrites)
+
+        val afterPush = data.withoutPendingTask(1, 10)
+        assertNull(afterPush.pendingTask(1, 10))
+        assertEquals(false, afterPush.pendingTask(1, 11))
+
+        // The last toggle for a project takes the project entry with it.
+        assertTrue(afterPush.withoutPendingTask(1, 11).pendingTasks.isEmpty())
+    }
+
+    @Test
+    fun `rebinding a world discards queued writes, since ids are world-scoped`() {
+        val data = WorldData(seamWorldId = 1)
+            .withCount(7, "minecraft:stone", 64)
+            .withPendingTask(7, 3, completed = true)
+
+        val rebound = data.withSeamWorld(2)
+
+        assertEquals(0, rebound.queuedWrites)
+        assertNull(rebound.pendingTask(7, 3))
     }
 
     @Test

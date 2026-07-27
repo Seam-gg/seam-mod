@@ -3,8 +3,11 @@ package gg.seam.mod.screen
 import gg.seam.mod.api.ProjectDto
 import gg.seam.mod.api.ResourceDto
 import gg.seam.mod.api.TaskDto
+import gg.seam.mod.chat.SeamChat
 import gg.seam.mod.data.SeamData
 import gg.seam.mod.data.SeamDataStore
+import gg.seam.mod.data.SeamSync
+import gg.seam.mod.data.SyncState
 import gg.seam.mod.data.WorldDataStore
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.gui.screen.Screen
@@ -51,6 +54,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
     private lateinit var settingsButton: ButtonWidget
     private lateinit var projectButton: ButtonWidget
     private lateinit var refreshButton: ButtonWidget
+    private lateinit var undoButton: ButtonWidget
     private lateinit var closeButton: ButtonWidget
 
     /**
@@ -59,6 +63,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
      * fixed in init().
      */
     private val batchButtons = mutableListOf<List<ButtonWidget>>()
+    private val taskButtons = mutableListOf<ButtonWidget>()
 
     /**
      * Which project [batchButtons] were built for. Each button closes over its project id and item
@@ -92,7 +97,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
                 .dimensions(contentX, projectBtnY, contentR - contentX - 60, BTN).build(),
         )
         refreshButton = addDrawableChild(
-            ButtonWidget.builder(Text.literal("Refresh")) { SeamDataStore.refresh() }
+            ButtonWidget.builder(Text.literal("Refresh")) { SeamSync.flush(); SeamDataStore.refresh() }
                 .dimensions(contentR - 56, projectBtnY, 56, BTN).build(),
         )
         statusY = projectBtnY + BTN + 4
@@ -102,7 +107,14 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         syncTextY = footerTop + 8
         closeButton = addDrawableChild(
             ButtonWidget.builder(Text.literal("Close")) { close() }
-                .dimensions(contentR - 54, footerTop + 2, 54, BTN).build(),
+                .dimensions(contentR - CLOSE_W, footerTop + 2, CLOSE_W, BTN).build(),
+        )
+        // Scoped to the shown project, never the whole queue: the queue can hold edits from an
+        // earlier offline session that the player can't see from here, and discarding those
+        // silently would destroy work.
+        undoButton = addDrawableChild(
+            ButtonWidget.builder(Text.literal("Undo edits")) { undoProjectEdits() }
+                .dimensions(contentR - CLOSE_W - 4 - UNDO_W, footerTop + 2, UNDO_W, BTN).build(),
         )
 
         // ---- scrollable body ----
@@ -113,13 +125,16 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
     }
 
     /**
-     * Batch counter buttons for the selected project's resources: minus cluster left-aligned, plus
-     * cluster right-aligned to contentR. Counts persist through [WorldDataStore], keyed project id →
-     * item id (MCO-272). 64 = a stack, 1728 = a double chest of stacks — deltas match the webapp.
+     * Widgets for the selected project: batch counter buttons per resource (minus cluster
+     * left-aligned, plus cluster right-aligned) and a toggle per task. Counts persist through
+     * [WorldDataStore], keyed project id → item id (MCO-272). 64 = a stack, 1728 = a double chest
+     * of stacks — deltas match the webapp.
      */
     private fun buildResourceButtons() {
         batchButtons.forEach { row -> row.forEach { remove(it) } }
         batchButtons.clear()
+        taskButtons.forEach { remove(it) }
+        taskButtons.clear()
 
         val current = project
         builtForProjectId = current?.id
@@ -127,7 +142,22 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
             recomputeContentHeight()
             return
         }
+
+        current.tasks.forEach { task ->
+            taskButtons += addDrawableChild(
+                ButtonWidget.builder(Text.literal(taskLabel(current.id, task))) { button ->
+                    val next = !completedOf(current.id, task)
+                    // Queue first, push second: the queue is what survives a crash or a lost
+                    // connection, and the optimistic label reads back out of it.
+                    WorldDataStore.update { it.withPendingTask(current.id, task.id, next) }
+                    button.message = Text.literal(taskLabel(current.id, task))
+                    SeamSync.flush()
+                }.dimensions(contentX, 0, contentR - contentX, BTN).build(),
+            )
+        }
+
         current.resources.forEach { resource ->
+            val displayed = { displayedCount(current.id, resource) }
             val widths = IntArray(BATCH_DELTAS.size) { textRenderer.getWidth(batchLabel(BATCH_DELTAS[it])) + BTN_PAD_X * 2 }
             val xs = IntArray(BATCH_DELTAS.size)
             xs[0] = contentX + 8
@@ -138,13 +168,11 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
             batchButtons += BATCH_DELTAS.mapIndexed { idx, delta ->
                 addDrawableChild(
                     ButtonWidget.builder(Text.literal(batchLabel(delta))) {
-                        // read + write inside the transform so the update is atomic; clamp >= 0.
+                        // Base is what's on screen, which is the server's count until the player
+                        // touches an item — otherwise the first +1 would jump to 1 rather than
+                        // incrementing what Seam already knows about.
                         WorldDataStore.update { data ->
-                            data.withCount(
-                                current.id,
-                                resource.itemId,
-                                (data.count(current.id, resource.itemId) + delta).coerceAtLeast(0),
-                            )
+                            data.withCount(current.id, resource.itemId, (displayed() + delta).coerceAtLeast(0))
                         }
                     }.dimensions(xs[idx], 0, widths[idx], BATCH_BTN).build(),
                 )
@@ -218,7 +246,21 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         }
 
         // fixed footer
-        context.drawText(textRenderer, syncLine(data), contentX, syncTextY, SeamPalette.MUTED, false)
+        val syncColor = if (SeamSync.state is SyncState.Failed) SeamPalette.RED else SeamPalette.MUTED
+        // Only this project's counts can be undone from here, so the button follows the selection.
+        val undoable = project?.let { WorldDataStore.current.resourceCounts.containsKey(it.id) } == true
+        undoButton.visible = undoable
+        undoButton.active = undoable
+        // Close pushes, so say so — otherwise the label claims less than the button does.
+        closeButton.message =
+            Text.literal(if (WorldDataStore.current.queuedWrites > 0) "Save & close" else "Close")
+        val footerTextWidth = (if (undoable) contentR - CLOSE_W - UNDO_W - 8 else contentR - CLOSE_W - 4) - contentX
+        context.drawText(
+            textRenderer,
+            textRenderer.trimToWidth(syncLine(data), footerTextWidth.coerceAtLeast(0)),
+            contentX, syncTextY, syncColor, false,
+        )
+        undoButton.render(context, mouseX, mouseY, delta)
         closeButton.render(context, mouseX, mouseY, delta)
     }
 
@@ -250,9 +292,11 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         if (current.tasks.isEmpty()) {
             context.drawText(textRenderer, "No tasks yet.", contentX, cy, SeamPalette.MUTED, false)
         }
-        // Read-only for now: toggling a task is a write, and writes land with MCO-269.
-        current.tasks.forEach { task ->
-            drawTask(context, task, cy)
+        current.tasks.forEachIndexed { i, _ ->
+            val button = taskButtons.getOrNull(i) ?: return@forEachIndexed
+            button.y = cy
+            button.active = cy >= bodyTop && cy + BTN <= bodyBottom
+            button.render(context, mouseX, mouseY, delta)
             cy += TASK_ROW
         }
     }
@@ -305,12 +349,26 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         return y + LINE + 4
     }
 
+    /**
+     * What the player should see for an item: their own un-pushed edit if they've made one,
+     * otherwise Seam's number. Local entries are cleared once they reach the server, so this falls
+     * back to the authoritative value on its own — and a later edit in the web app isn't shadowed
+     * by a stale local copy. (Reconciling *scanned* counts is still MCO-263.)
+     */
+    private fun displayedCount(projectId: Int, resource: ResourceDto): Int =
+        WorldDataStore.current.resourceCounts[projectId]?.get(resource.itemId) ?: resource.collected
+
+    /** Optimistic completion: a queued toggle outranks the server's state until it's pushed. */
+    private fun completedOf(projectId: Int, task: TaskDto): Boolean =
+        WorldDataStore.current.pendingTask(projectId, task.id) ?: task.completed
+
+    private fun taskLabel(projectId: Int, task: TaskDto): String {
+        val mark = if (completedOf(projectId, task)) "[x] " else "[ ] "
+        return textRenderer.trimToWidth(mark + task.name, contentR - contentX - 8)
+    }
+
     private fun drawResource(context: DrawContext, projectId: Int, resource: ResourceDto, y: Int) {
-        // Manual counts (MCO-272) win while they exist — they're what the player has been editing
-        // in-game. Otherwise show what Seam has. Reconciling the two properly is MCO-263, and
-        // pushing local counts back is MCO-269.
-        val manual = WorldDataStore.current.count(projectId, resource.itemId)
-        val have = if (manual > 0) manual else resource.collected
+        val have = displayedCount(projectId, resource)
         val complete = have >= resource.required
         val progress = if (resource.required == 0) 1f else (have.toFloat() / resource.required).coerceIn(0f, 1f)
         // Top line: name (left), bar, count (right) share a vertical center within TOP_H so the 6px
@@ -332,12 +390,6 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         )
     }
 
-    private fun drawTask(context: DrawContext, task: TaskDto, y: Int) {
-        val mark = if (task.completed) "[x] " else "[ ] "
-        val color = if (task.completed) SeamPalette.DISABLED else SeamPalette.INK
-        context.drawText(textRenderer, trim(mark + task.name), contentX, y, color, false)
-    }
-
     private fun projectLabel(): String {
         val current = project ?: return "No project"
         val position = if (projects.size > 1) " (${projectIndex + 1}/${projects.size})" else ""
@@ -352,11 +404,26 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
     private fun statusLine(): String =
         project?.let { "Stage: ${it.stage.pretty()} - ${it.state.pretty()}" }.orEmpty()
 
-    private fun syncLine(data: SeamData): String = when (data) {
-        is SeamData.Loaded -> "Last synced: ${TIME.format(Date(data.fetchedAtMillis))}"
-        is SeamData.Loading -> "Syncing..."
-        else -> "Last synced: never"
+    /**
+     * The footer reports the *push* side when there is one, because that's the half the player has
+     * unsaved work riding on. Pulls are visible enough — the numbers on screen change.
+     */
+    private fun syncLine(data: SeamData): String {
+        val queued = WorldDataStore.current.queuedWrites
+        return when (val sync = SeamSync.state) {
+            is SyncState.Syncing -> "Pushing changes..."
+            is SyncState.Failed -> "Offline - $queued unsaved change${plural(queued)}, will retry"
+            else -> when {
+                queued > 0 -> "$queued unsaved change${plural(queued)}"
+                sync is SyncState.Synced -> "Saved to Seam at ${TIME.format(Date(sync.atMillis))}"
+                data is SeamData.Loaded -> "Last synced: ${TIME.format(Date(data.fetchedAtMillis))}"
+                data is SeamData.Loading -> "Syncing..."
+                else -> "Last synced: never"
+            }
+        }
     }
+
+    private fun plural(count: Int): String = if (count == 1) "" else "s"
 
     /** `IN_PROGRESS` -> `In progress`. The API sends enum names; the notebook shouldn't shout. */
     private fun String.pretty(): String =
@@ -370,7 +437,23 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
 
     override fun shouldPause(): Boolean = false
 
+    /** Discard this project's un-pushed counts; the rows fall back to Seam's values. */
+    private fun undoProjectEdits() {
+        val current = project ?: return
+        WorldDataStore.update { it.withProjectReset(current.id) }
+    }
+
     override fun close() {
+        // Resource edits are batched to here rather than pushed per click: holding +1 would
+        // otherwise fire a request per press. Task toggles push immediately — they're discrete.
+        //
+        // The screen is gone by the time this resolves, so a failure has to reach the player some
+        // other way — the work isn't lost (it stays queued), but silence would read as success.
+        SeamSync.flush().thenAccept { result ->
+            if (result.failure != null) {
+                SeamChat.error("Could not save to Seam (${result.failure}). Changes are queued and will retry.")
+            }
+        }
         client?.setScreen(null)
     }
 
@@ -384,9 +467,11 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         const val BTN_GAP = 3 // gap between adjacent batch buttons
         val BATCH_DELTAS = intArrayOf(-1, -64, 1, 64, 1728)
         const val RES_ROW = 34 // TOP_H (13) + BATCH_BTN (16) + trailing pad
-        const val TASK_ROW = 12
+        const val TASK_ROW = 22
         const val GAP = 6
         const val FOOTER_H = 26
+        const val CLOSE_W = 78
+        const val UNDO_W = 66
         const val SCROLL_STEP = 14
 
         val TIME = SimpleDateFormat("HH:mm:ss")
