@@ -10,21 +10,23 @@ import java.util.concurrent.CompletableFuture
  * to a Seam world ([seamWorldId]) and holds the manual resource counts the player enters in the
  * notebook. See docs/fabric-1.21.11-reference.md §7.
  *
- * [resourceCounts] is keyed project id → (item id → manual count). MVP scope (MCO-258): manual
- * counters only; container-tag maps and gather/scan caches are deferred with Phase 2.
+ * [resourceCounts] is keyed project id → (item id → manual count). Ids are `Int` because that is
+ * what mc-org and its database use — the string ids this file briefly held came from the Phase 1
+ * placeholder data (MCO-268). A file written by that build fails to decode and [SeamStorage]
+ * preserves it as `.corrupt` and starts from defaults; only throwaway placeholder counts are lost.
  */
 @Serializable
 data class WorldData(
-    val version: Int = 1,
-    @SerialName("seam_world_id") val seamWorldId: String? = null,
-    @SerialName("resource_counts") val resourceCounts: Map<String, Map<String, Int>> = emptyMap(),
+    val version: Int = 2,
+    @SerialName("seam_world_id") val seamWorldId: Int? = null,
+    @SerialName("resource_counts") val resourceCounts: Map<Int, Map<String, Int>> = emptyMap(),
 ) {
     /** Manual count for [itemId] under [projectId], or 0 if unset. */
-    fun count(projectId: String, itemId: String): Int =
+    fun count(projectId: Int, itemId: String): Int =
         resourceCounts[projectId]?.get(itemId) ?: 0
 
     /** Copy with [itemId]'s count under [projectId] set to [value] (removes the entry when 0). */
-    fun withCount(projectId: String, itemId: String, value: Int): WorldData {
+    fun withCount(projectId: Int, itemId: String, value: Int): WorldData {
         val items = resourceCounts[projectId].orEmpty().toMutableMap()
         if (value <= 0) items.remove(itemId) else items[itemId] = value
         val counts = resourceCounts.toMutableMap()
@@ -33,8 +35,12 @@ data class WorldData(
     }
 
     /** Copy with all manual counts for [projectId] cleared. */
-    fun withProjectReset(projectId: String): WorldData =
+    fun withProjectReset(projectId: Int): WorldData =
         copy(resourceCounts = resourceCounts.toMutableMap().apply { remove(projectId) })
+
+    /** Copy bound to Seam world [worldId]; project counts are dropped since ids are world-scoped. */
+    fun withSeamWorld(worldId: Int): WorldData =
+        if (worldId == seamWorldId) this else copy(seamWorldId = worldId, resourceCounts = emptyMap())
 }
 
 /**

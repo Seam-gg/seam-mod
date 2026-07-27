@@ -55,8 +55,13 @@ object SeamStorage {
         return try {
             json.decodeFromString(deserializer, Files.readString(path))
         } catch (e: Exception) {
-            // Preserve the unreadable file instead of letting the next save clobber it.
-            SeamClient.logger.warn("Corrupt Seam data at $path (${e.message}); preserving as .corrupt, using defaults")
+            // Preserve the unreadable file instead of letting the next save clobber it. A file
+            // written by an older mod version whose schema has since changed lands here too, so
+            // this is not necessarily damage — say so rather than shouting "corrupt".
+            SeamClient.logger.warn(
+                "Could not read Seam data at $path (${e.message}); preserved as .corrupt and " +
+                    "starting from defaults. A file written by an older mod version can cause this once.",
+            )
             runCatching {
                 Files.move(path, path.resolveSibling("${path.fileName}.corrupt"), StandardCopyOption.REPLACE_EXISTING)
             }
