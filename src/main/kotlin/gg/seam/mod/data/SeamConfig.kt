@@ -18,6 +18,8 @@ data class SeamConfig(
     val version: Int = 1,
     val auth: AuthConfig? = null,
     val settings: SeamSettings = SeamSettings(),
+    /** Override for the Seam webapp origin (self-hosting). Null = the public app; see [gg.seam.mod.api.SeamApi]. */
+    @SerialName("api_base_url") val apiBaseUrl: String? = null,
 )
 
 /** Account link written after device-code auth (MCO-236). Absent until the user links Seam. */
