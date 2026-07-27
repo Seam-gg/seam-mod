@@ -2,6 +2,9 @@ package gg.seam.mod.screen
 
 import gg.seam.mod.api.SeamApi
 import gg.seam.mod.auth.DeviceCodeAuth
+import gg.seam.mod.data.SeamData
+import gg.seam.mod.data.SeamDataStore
+import gg.seam.mod.data.WorldDataStore
 import gg.seam.mod.util.Browser
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.gui.Drawable
@@ -24,6 +27,7 @@ class SettingsScreen(private val parent: Screen?) : Screen(Text.literal("Seam Se
     private lateinit var primaryButton: ButtonWidget
     private lateinit var openPageButton: ButtonWidget
     private lateinit var copyCodeButton: ButtonWidget
+    private lateinit var worldButton: ButtonWidget
     private lateinit var closeButton: ButtonWidget
 
     /** Unlink is destructive, so the button asks once before doing it (spec: "confirms first"). */
@@ -38,7 +42,7 @@ class SettingsScreen(private val parent: Screen?) : Screen(Text.literal("Seam Se
 
     override fun init() {
         panelW = minOf(360, width - 20)
-        panelH = minOf(200, height - 20)
+        panelH = minOf(240, height - 20)
         left = (width - panelW) / 2
         top = (height - panelH) / 2
         contentX = left + PAD
@@ -57,6 +61,10 @@ class SettingsScreen(private val parent: Screen?) : Screen(Text.literal("Seam Se
         copyCodeButton = addDrawableChild(
             ButtonWidget.builder(Text.literal("Copy code")) { copyCode() }
                 .dimensions(contentX + 242, top + 96, 80, BTN).build(),
+        )
+        worldButton = addDrawableChild(
+            ButtonWidget.builder(Text.literal("Choose world")) { client?.setScreen(WorldPickerScreen(this)) }
+                .dimensions(contentX, top + 158, 150, BTN).build(),
         )
         closeButton = addDrawableChild(
             ButtonWidget.builder(Text.literal("Back")) { close() }
@@ -87,6 +95,20 @@ class SettingsScreen(private val parent: Screen?) : Screen(Text.literal("Seam Se
             context.drawText(textRenderer, trim(text), contentX, y, color, false)
             y += LINE + 2
         }
+
+        // ---- Seam world ----
+        var worldY = top + 128
+        context.drawText(textRenderer, "SEAM WORLD", contentX, worldY, SeamPalette.LAPIS, false)
+        context.fill(contentX, worldY + 10, contentR, worldY + 11, SeamPalette.BORDER)
+        worldY += LINE + 6
+        val (worldText, worldColor) = worldStatus()
+        context.drawText(textRenderer, trim(worldText), contentX, worldY, worldColor, false)
+
+        // Picking a world is only meaningful once there's a token to list them with.
+        worldButton.active = SeamApi.isLinked
+        worldButton.message = Text.literal(
+            if (WorldDataStore.current.seamWorldId == null) "Choose world" else "Change world",
+        )
 
         primaryButton.message = Text.literal(primaryLabel(state))
         val awaiting = state is DeviceCodeAuth.State.AwaitingApproval
@@ -130,6 +152,22 @@ class SettingsScreen(private val parent: Screen?) : Screen(Text.literal("Seam Se
             state.reason to SeamPalette.RED,
             "Try linking again." to SeamPalette.MUTED,
         )
+    }
+
+    /**
+     * The current world binding, resolved to a name from the last pull when we have one — the file
+     * only stores the id, and an id on its own tells the player nothing.
+     */
+    private fun worldStatus(): Pair<String, Int> {
+        if (!SeamApi.isLinked) return "Link an account first." to SeamPalette.MUTED
+        if (WorldDataStore.key == null) return "Join a world to bind it." to SeamPalette.MUTED
+        val boundId = WorldDataStore.current.seamWorldId
+            ?: return "Not linked to a Seam world yet." to SeamPalette.MUTED
+        return when (val data = SeamDataStore.state) {
+            is SeamData.Loaded -> "Bound to world #$boundId (${data.projects.size} projects)." to SeamPalette.GREEN
+            is SeamData.Failed -> "Bound to world #$boundId - ${data.reason}" to SeamPalette.RED
+            else -> "Bound to world #$boundId." to SeamPalette.GREEN
+        }
     }
 
     private fun primaryLabel(state: DeviceCodeAuth.State): String = when {
