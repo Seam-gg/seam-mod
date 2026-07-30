@@ -29,7 +29,7 @@ import java.util.concurrent.CompletionException
 class SeamApiClient(
     private val baseUrl: () -> String,
     private val token: () -> String?,
-    private val userAgent: String = "SeamCompanion (Fabric)",
+    private val userAgent: String = "SeamNotebook (Fabric)",
     private val http: HttpClient = defaultHttpClient(),
 ) {
 
