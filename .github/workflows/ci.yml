@@ -18,18 +18,18 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # First run is slow (5-10 min): Loom downloads and remaps Minecraft before anything compiles.
-    # Cached runs land around 1-2 min.
+    # A cold run (no Gradle cache) is ~2 min: Loom downloads and remaps Minecraft before anything
+    # compiles. The timeout is deliberately far above that, to catch a hang rather than a slow day.
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Verifies gradle-wrapper.jar against the checksums Gradle publishes — the wrapper jar is
       # executable code in the repo, and this is what stops a tampered one from running here.
-      - uses: gradle/actions/wrapper-validation@v4
+      - uses: gradle/actions/wrapper-validation@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           # Matches jvmToolchain(21) in build.gradle.kts, so Gradle never has to provision a
           # second JDK. MC 1.21.11 targets Java 21.
@@ -39,7 +39,11 @@ jobs:
       # Caches ~/.gradle, which covers Loom's own caches (~/.gradle/caches/fabric-loom) — the
       # expensive part. Only `main` writes the cache; branches read it, so a broken branch can
       # never poison the shared entry.
-      - uses: gradle/actions/setup-gradle@v4
+      #
+      # Pinned to v5 on purpose — do not bump to v6. v6 extracted the caching into
+      # `gradle-actions-caching`, a closed-source component under Gradle's commercial Terms of Use
+      # rather than the MIT licence. v5 is already on Node 24, so the pin costs us nothing.
+      - uses: gradle/actions/setup-gradle@v5
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
@@ -54,7 +58,7 @@ jobs:
       # The remapped jar — the one that actually loads in Minecraft. Loom also leaves the
       # unmapped intermediary jar in build/libs; devlibs/ and sources are excluded here.
       - name: Upload mod jar
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: seam-notebook-${{ steps.version.outputs.value }}
           path: build/libs/*.jar
@@ -62,7 +66,7 @@ jobs:
 
       - name: Upload test reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: |
