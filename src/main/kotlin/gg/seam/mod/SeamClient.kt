@@ -17,7 +17,7 @@ import org.lwjgl.glfw.GLFW
 import org.slf4j.LoggerFactory
 
 /**
- * Client entrypoint for the Seam Companion mod.
+ * Client entrypoint for the Seam Notebook mod.
  *
  * Phase 0: registers the "open notebook" keybind (default: N) and confirms it fires.
  * Phase 1 will replace the placeholder action with the notebook [net.minecraft.client.gui.screen.Screen].
@@ -27,7 +27,9 @@ import org.slf4j.LoggerFactory
  * See docs/fabric-1.21.11-reference.md §3 (decision D1).
  */
 object SeamClient : ClientModInitializer {
-    const val MOD_ID = "seam"
+    // Not plain "seam": an unrelated mod already owns that id on Modrinth, and two mods sharing an
+    // id is a hard load failure for anyone running both. Namespaces resources and the log channel.
+    const val MOD_ID = "seam_notebook"
     val logger = LoggerFactory.getLogger(MOD_ID)
 
     private lateinit var openNotebookKey: KeyBinding
@@ -35,7 +37,7 @@ object SeamClient : ClientModInitializer {
     override fun onInitializeClient() {
         openNotebookKey = KeyBindingHelper.registerKeyBinding(
             KeyBinding(
-                "key.seam.open_notebook",   // translation key (assets/seam/lang)
+                "key.seam_notebook.open_notebook",   // translation key (assets/seam_notebook/lang)
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_N,
                 // 1.21.x: category is a KeyBinding.Category record, not a String.
@@ -73,6 +75,6 @@ object SeamClient : ClientModInitializer {
             SeamSync.clear()
         }
 
-        logger.info("Seam Companion (client) initialized")
+        logger.info("Seam Notebook (client) initialized")
     }
 }

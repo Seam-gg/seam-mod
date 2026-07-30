@@ -6,6 +6,9 @@ out/
 # Fabric Loom dev run directory
 run/
 
+# Per-developer Claude Code settings (the skills under .claude/skills/ are committed)
+.claude/settings.local.json
+
 # IDE
 .idea/
 *.iml

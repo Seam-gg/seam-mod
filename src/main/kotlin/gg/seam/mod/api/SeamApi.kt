@@ -53,6 +53,6 @@ object SeamApi {
                 .map { it.metadata.version.friendlyString }
                 .orElse("dev")
         }.getOrDefault("dev")
-        return "SeamCompanion/$version (Fabric)"
+        return "SeamNotebook/$version (Fabric)"
     }
 }

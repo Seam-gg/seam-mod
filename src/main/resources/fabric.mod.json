@@ -1,12 +1,14 @@
 {
   "schemaVersion": 1,
-  "id": "seam",
+  "id": "seam_notebook",
   "version": "${version}",
-  "name": "Seam Companion",
+  "name": "Seam Notebook",
   "description": "In-game companion for the Seam webapp — resource tracking, container tagging, and task check-off. Client-only (v1).",
   "authors": ["Even Gultvedt"],
   "contact": {
-    "homepage": "https://app.seam.gg"
+    "homepage": "https://app.seam.gg",
+    "sources": "https://github.com/Seam-gg/seam-mod",
+    "issues": "https://github.com/Seam-gg/seam-mod/issues"
   },
   "license": "MIT",
   "environment": "client",

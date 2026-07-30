@@ -9,7 +9,12 @@ val modVersion: String by project
 val mavenGroup: String by project
 val archivesBaseName: String by project
 
-version = modVersion
+// Version scheme: <semver>+<minecraft_version>, e.g. "0.1.0+1.21.11". The suffix is SemVer build
+// metadata — Fabric loader parses it, and it is the same shape Fabric API itself ships
+// (fabric_version=0.141.4+1.21.11). Only the semver half is hand-edited, in gradle.properties; the
+// MC half is derived here so the two can never disagree. A rebuild of unchanged code against a new
+// MC version is therefore a new version string without a fake patch bump.
+version = "$modVersion+${property("minecraft_version")}"
 group = mavenGroup
 
 base {
@@ -98,4 +103,13 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+// The release workflow reads this to assert the pushed tag matches the composed version, so a
+// mistyped tag fails the build instead of publishing a mislabelled jar. Captured into a local now
+// rather than read off `project` inside doLast, which would break under the configuration cache if
+// we ever turn it on. Run as `./gradlew -q printVersion` — -q keeps stdout to the value alone.
+val composedVersion = version.toString()
+tasks.register("printVersion") {
+    doLast { println(composedVersion) }
 }

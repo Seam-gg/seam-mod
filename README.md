@@ -1,10 +1,11 @@
-# Seam Companion (Minecraft mod)
+# Seam Notebook (Minecraft mod)
 
 Client-side Fabric mod that bridges in-game resource tracking with the [Seam](https://app.seam.gg)
 webapp: inventory logging, container tagging, resource reconciliation, and task check-off.
 
 - **Loader:** Fabric · **Minecraft:** 1.21.11 · **Language:** Kotlin (fabric-language-kotlin)
 - **Distribution:** client-only (v1); multiplayer is supported but degraded (see reference doc)
+- **Mod id:** `seam_notebook` · **Modrinth:** [`seam-notebook`](https://modrinth.com/mod/seam-notebook)
 
 ## Develop
 
@@ -68,6 +69,30 @@ against it). Override per run:
 
 Resolution order is `-Dseam.apiBaseUrl` → `SEAM_API_BASE_URL` → `api_base_url` in
 `seam/config.json` → `https://app.seam.gg`. See `gg.seam.mod.api.SeamApi`.
+
+## Versioning and releases
+
+Versions are `<semver>+<minecraft_version>` — e.g. `0.2.0+1.21.11`. The semver half is
+`modVersion` in `gradle.properties` and is the only part edited by hand; `build.gradle.kts`
+appends the MC version, so the two can never disagree. Read the composed value back with
+`./gradlew -q printVersion`.
+
+Rebuilding unchanged code for a new Minecraft version therefore produces a new version string
+without a fake patch bump. Pre-1.0 releases go to Modrinth as **beta** — the wire contract with
+mc-org's `ApiDtos.kt` still moves in lockstep with the mod, so no jar yet promises to outlive a
+webapp deploy.
+
+**CI** (`.github/workflows/ci.yml`) builds and tests every push to `main` and every PR, and
+attaches the remapped jar to the run.
+
+**Releasing** is an annotated tag `v<version>` (e.g. `v0.2.0+1.21.11`), whose message is published
+verbatim as the changelog. `.github/workflows/release.yml` rebuilds from the tag, refuses to
+continue if the tag disagrees with the composed version or carries no message, and then **waits
+for manual approval** — the upload job targets the `modrinth` GitHub Environment, where the
+Modrinth token lives. Nothing publishes without a click.
+
+Use the `/release` skill (`.claude/skills/release/`) to drive it; it owns the preflight checks,
+the version bump, the changelog format, and the tag push.
 
 ## Docs
 

@@ -1,11 +1,15 @@
 # seam-mod — Claude context
 
-Client-side **Fabric** Minecraft mod (the "Seam Companion"), part of the Seam workspace.
+Client-side **Fabric** Minecraft mod (**Seam Notebook**), part of the Seam workspace.
 Bridges in-game resource tracking with the Seam webapp (`mc-org`, at `app.seam.gg`).
 
 ## Hard facts
 
 - **Loader:** Fabric · **Minecraft:** `1.21.11` · **Language:** Kotlin via fabric-language-kotlin.
+- **Names:** display name **Seam Notebook**, mod id **`seam_notebook`**, Modrinth slug
+  **`seam-notebook`**. Not plain `seam` — an unrelated horror mod already owns that Modrinth slug,
+  and a shared mod id is a hard load failure for anyone running both. The Linear *project* is still
+  called "Seam Companion Mod"; that's internal, like `mc-org` itself.
 - **Client-only** in v1. `environment: "client"`, single `client` entrypoint (`gg.seam.mod.SeamClient`).
   A server component is v2 and will be prototyped **as a script** against our own Fabric server, not
   a second mod artifact.
@@ -53,6 +57,20 @@ Point the mod at a local webapp with `-Dseam.apiBaseUrl=http://localhost:8080` (
 `./gradlew test` — JUnit 5 over the Minecraft-free half (wire models, `SeamApiClient` against a
 loopback `com.sun.net.httpserver`, the device-code poll policy). Anything touching `MinecraftClient`
 can't be unit-tested here; that's `runClient` territory.
+
+## Versioning & release
+
+- Version string is `<semver>+<minecraft_version>` (`0.2.0+1.21.11`). **Only `modVersion` in
+  `gradle.properties` is hand-edited** — `build.gradle.kts` appends `minecraft_version`. Read the
+  composed value with `./gradlew -q printVersion`; never hardcode it anywhere.
+- A release is an **annotated** tag `v<version>`, and **the tag message is the changelog** — it is
+  published verbatim to the Modrinth version page. Player-facing prose only; no Linear IDs or class
+  names. Use the **`/release` skill** (`.claude/skills/release/`) rather than tagging by hand.
+- CI (`.github/workflows/ci.yml`) runs on every push to `main` and every PR.
+  `release.yml` fires on `v*` tags, asserts tag == composed version, and gates the Modrinth upload
+  behind the `modrinth` GitHub Environment's manual approval. Nothing publishes automatically.
+- Pre-1.0 → Modrinth **beta** channel. `1.0.0` waits until a shipped jar must survive an mc-org
+  deploy; today the mod and `ApiDtos.kt` still change together.
 
 ## Workspace rules
 
