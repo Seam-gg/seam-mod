@@ -1,3 +1,24 @@
+> **Historical — the originating v1 specification, kept for provenance. Do not read it as current.**
+>
+> This is the document the mod was started from (2026-07-06). Parts of it have since been
+> superseded and it is no longer maintained; where it disagrees with the tracker, the tracker wins.
+>
+> Known superseded sections, as of 2026-09-06 (the *Shared Storage* project in Linear):
+>
+> * **Container Tags** — tags live in the mc-org webapp now, not in a client-local world file.
+>   A client-local tag is invisible to the thing that reads the chest.
+> * **Gather Mode** — cancelled as a counting mechanism (MCO-262). The count is what is in
+>   tagged containers, read by a server-side half of the mod; not what players picked up.
+> * **Multiplayer Behavior** — the mod is gaining a server half (MCO-534), so container reading
+>   will not be singleplayer-only and will not degrade to open-and-cache. Not shipped yet.
+> * **Notifications** — "No custom overlay renderer" still holds for *milestone* messages
+>   (chat, MCO-265), but a persistent on-screen item list is planned (MCO-537).
+>
+> Current, maintained documents: `docs/fabric-1.21.11-reference.md` (the 1.21.11 API and its
+> churn hazards), `CLAUDE.md` (decisions in force), and Linear (all planned work).
+
+---
+
 # Seam Companion Mod — v1 Specification
 
 > Fabric client-side mod for Minecraft. Bridges in-game resource tracking with the Seam web application.
