@@ -13,7 +13,7 @@
 | Mod loader | **Fabric** | Matches the Seam server (`seam-server-dashboard`) |
 | Minecraft | **1.21.11** | Server's `client-mods.json` / `fly.toml` pin this |
 | Language | **Kotlin** via fabric-language-kotlin | Per spec |
-| Distribution | **Client-only** (v1); degraded multiplayer | Per spec; server component is v2, "script-first" |
+| Distribution | **Client-only** today (`environment: "client"`) — **client + server** once MCO-534 lands | The *Shared Storage* project adds a `main` entrypoint that reads tagged containers server-side. Until that ships, the jar is client-only; §9 documents what it will need. |
 | HTTP | **JDK `java.net.http.HttpClient`** (not ktor) | MC runs on Java 21; a handful of JSON calls don't justify Jar-in-Jar |
 | JSON | **kotlinx-serialization** | Already bundled by FLK — do NOT re-bundle |
 
@@ -50,6 +50,7 @@ The single most valuable output of the sweep. Every one of these will silently b
 | H8 | **Recipe folder singular** `data/<ns>/recipe/` + string ingredients + `result.id` | **1.21.0** | Notebook crafting recipe. |
 | H9 | **`assets/<ns>/items/<name>.json`** item-model definition required | **1.21.4** | Notebook item asset. |
 | H10 | **Fabric docs site now renders Mojmap + a newer-snapshot render model** (`extractRenderState`, `Component`, `addRenderableWidget`) that does NOT match 1.21.11 Yarn | current | Don't copy the docs site's render/GUI prose verbatim — translate names, ignore `extractRenderState`. |
+| H11 | **HUD rendering** — `HudRenderCallback` superseded by `…rendering.v1.hud.HudElementRegistry` + `HudElement.render(DrawContext, RenderTickCounter)`, ordered against `VanillaHudElements.*` | **fabric-api ≥1.21.6** | The storage HUD (§9). Verified against `fabric-rendering-v1` 16.2.10 in this project's own dependency graph. |
 
 **Mappings:** all snippets below are **Yarn**. If the build uses Mojmap, translate (`MinecraftClient`→`Minecraft`, `Text`→`Component`, `ButtonWidget`→`Button`, `addDrawableChild`→`addRenderableWidget`, `Identifier`→`ResourceLocation`, etc.). Pick one and stay consistent.
 
@@ -127,7 +128,7 @@ Assets: `models/item/notebook.json` (`item/generated` + `layer0`), **`items/note
 - **Tabs (settings):** vanilla `TabNavigationWidget` + `TabManager` (idiomatic, boilerplate-heavy) OR a manual `activeTab` + re-init (lighter, better for a custom notebook aesthetic). Scrollable rows with controls → `ElementListWidget`; selectable rows → `AlwaysSelectedEntryListWidget`.
 - **Input:** H3 — `keyPressed(KeyInput)`, mouse handlers take `Click`/`MouseInput`. Verify accessor names in-IDE.
 - **Fonts:** IBM Plex Mono is possible via a `ttf` font provider (`assets/seam/font/…`, select with `Text.styled{ it.withFont(...) }`) but TTF is anti-aliased/off-grid and fiddly. **Recommend vanilla font for v1**; reserve Plex for web surfaces.
-- **Container-tag picker overlay:** a non-pausing `Screen` (`shouldPause()=false`, render only a small card) — reuses widgets/focus/close, still modal. A true no-input HUD chip would use `HudRenderCallback`.
+- **Container-tag picker overlay:** a non-pausing `Screen` (`shouldPause()=false`, render only a small card) — reuses widgets/focus/close, still modal. A true no-input HUD chip does **not** use `HudRenderCallback` any more — that is superseded (H11); see §9.
 
 **v1 GUI strategy:** build entirely from `fill` rectangles + text + vanilla widgets. This dodges H4 (RenderPipeline textures) and the TTF font work.
 
@@ -160,7 +161,11 @@ A client-only mod sees **only what the vanilla client is told over the network.*
 | Item pickup events | ✅ | ✅ (packet mixin, below) |
 | Container open/close | ✅ `ScreenEvents` | ✅ |
 
-**Consequence for the product:** the spec's "walk all tagged containers and snapshot them" is effectively **singleplayer-only**. On the server we run, container tracking degrades to **open-and-cache with staleness**. **Gather mode (pickup tracking) is the reliable multiplayer path.** Server-side container scanning is exactly the piece that wants a **server-side script** (RCON / world-data), matching the "run server bits as a script first" plan.
+**The table above is still true and still load-bearing.** What changed (2026-09-06) is the answer to it.
+
+This section used to conclude that container snapshots were singleplayer-only, that multiplayer degraded to open-and-cache with staleness, and that **gather mode (pickup tracking) was the reliable multiplayer path**. The *Shared Storage* project takes the other road: rather than approximate a closed container from the client, a **server half reads it properly** (§9). Pickup tracking and inventory scanning were cancelled as counting mechanisms — the count is what is in tagged containers, nothing else.
+
+So the constraint is unchanged and the mitigation is inverted: **do not** reach for `onItemPickupAnimation` or open-and-cache to count resources. Read the container on the side that can see it.
 
 ### How
 - **Player inventory:** `client.player.inventory` implements `Iterable<ItemStack>` — iterate it (H7: don't touch `.armor`/`.offHand`). Count by id: `Registries.ITEM.getId(stack.item)`. Test with `stack.isOf(...)` / `stack.isEmpty` (never `==`). Ender chest: `player.enderChestInventory`.
@@ -193,6 +198,48 @@ A client-only mod sees **only what the vanilla client is told over the network.*
 | D4 | Backend prerequisites | **MCO-235 (JSON API)** + **MCO-236 (device-code auth)** must land before any sync; they're mc-org work (worktree-first) |
 | D5 | GUI textures/fonts | v1 = `fill` + text + vanilla widgets + vanilla font; defer custom art |
 | D6 | Verify all ⚠ signatures | Stand up the dev env early; let the compiler + a smoke world confirm the 1.21.11 build |
+
+## 9. Server side: containers & the HUD
+
+> **Forward-looking (2026-09-06).** None of this is built yet — it is the verified API surface for the *Shared Storage* project (MCO-534, MCO-260, MCO-537). Recorded here rather than in an issue because these are facts about 1.21.11, and they will outlive the issues.
+
+Everything here was checked against `minecraft-merged-1.21.11-…-yarn.1.21.11+build.6` and the Fabric API jars in this project's dependency graph — **not** against the docs site (H10).
+
+### The mod becomes client + server (MCO-534)
+
+`environment: "*"` with both a `client` and a `main` entrypoint. `main` runs on dedicated servers **and in singleplayer's integrated server**, which is what makes SP and MP one code path rather than two implementations. The two halves never speak to each other — no custom packets — they meet in the mc-org API.
+
+⚠ Code in the shared sweep package must not reference `MinecraftClient`, or it will not class-load on a dedicated server. This fails late and loudly; the dedicated-server load test is the guard.
+
+### Reading a container server-side
+
+| need | API | note |
+|---|---|---|
+| chunk guard | `ServerWorld.isChunkLoaded(long)` + `ChunkPos.toLong(BlockPos)` | An unloaded container **cannot have changed** — keep its last reading rather than re-reading it. |
+| the inventory | `world.getBlockEntity(pos) as? Inventory` | Must run **on the server thread** — world access is not thread-safe. |
+| double chests | `ChestBlock.getInventory(ChestBlock, BlockState, World, BlockPos, boolean)` | Returns the **combined** `DoubleInventory` from *either* half — so reading both halves double-counts. Dedupe to one canonical position. |
+| shulker contents | `stack.get(DataComponentTypes.CONTAINER)` → `ContainerComponent.streamNonEmpty()` | One level deep; vanilla shulkers do not nest. Without this a shulker-based base reports near-zero. |
+| the tick hook | `ServerTickEvents.END_SERVER_TICK` | Also `START_SERVER_TICK`, `START_WORLD_TICK`, `END_WORLD_TICK`. |
+
+### HUD (H11)
+
+`HudRenderCallback` is superseded. The current API is `net.fabricmc.fabric.api.client.rendering.v1.hud`:
+
+```kotlin
+HudElementRegistry.attachElementAfter(
+    VanillaHudElements.SCOREBOARD,
+    Identifier.of(SeamClient.MOD_ID, "storage_hud"),
+) { context: DrawContext, tick: RenderTickCounter -> StorageHud.render(context) }
+```
+
+- `HudElement.render(DrawContext, RenderTickCounter)` — one method.
+- Ordering: `addFirst` / `addLast` / `attachElementBefore` / `attachElementAfter`, anchored on `VanillaHudElements` (`CROSSHAIR`, `HOTBAR`, `SCOREBOARD`, `CHAT`, `BOSS_BAR`, `STATUS_EFFECTS`, …). `removeElement` / `replaceElement` also exist.
+- **`DrawContext.drawItem(ItemStack, x, y)` is present** — real item icons for free, with no texture work and therefore no H4 `RenderPipeline` argument.
+- Respect `client.options.hudHidden` (F1), and hide while a `Screen` is open.
+
+Still the highest-churn area in the codebase (H1). **Spike it before building on it.**
+
+---
 
 ## Source index
 Full per-slice source URLs are in the six agent transcripts. Primary anchors: `meta.fabricmc.net`, `maven.fabricmc.net/docs/yarn-1.21.11+build.3` (and build.4/.6), `docs.fabricmc.net/develop` (Mojmap — translate), Fabric release notes 2025-09-23 (1.21.9/.10) and 2025-12-05 (1.21.11), fabric-api issues #1130 (pickup) and #4902 (WorldRenderEvents redesign).
