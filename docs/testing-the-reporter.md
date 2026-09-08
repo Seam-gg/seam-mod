@@ -68,6 +68,11 @@ code path is identical to a dedicated server's.
 ./gradlew runClient   # or runServer
 ```
 
+⚠ **In singleplayer, create the world with cheats allowed.** `/seam` is owners-only, and a
+singleplayer host without cheats has permission level 0 — the command will not even appear, which
+looks exactly like the mod failing to load. `runServer`'s console is always level 4, so it needs
+nothing.
+
 Then, in the server console (or in-game as an operator):
 
 ```
