@@ -201,4 +201,42 @@ class ApiModelsTest {
         assertTrue(lower.contains(""""group_key":"4,64,4""""))
         assertTrue(upper.contains(""""group_key":"4,64,4""""))
     }
+
+    // ── Gathering plan (MCO-533) ───────────────────────────────────────────────
+
+    @Test
+    fun `a plan activity decodes the snake_case wire format`() {
+        val activities = json.decodeFromString(
+            kotlinx.serialization.builtins.ListSerializer(PlanActivityDto.serializer()),
+            """
+            [
+              {"item_id":"minecraft:oak_log","name":"Oak Log","quantity":128,
+               "activity_group":"GATHER","status":"RAW_GATHER"},
+              {"item_id":"#minecraft:planks","name":"Planks","quantity":32,
+               "activity_group":"NEEDS_ATTENTION","status":"OPEN_TAG"}
+            ]
+            """.trimIndent(),
+        )
+
+        assertEquals(2, activities.size)
+        assertEquals("minecraft:oak_log", activities[0].itemId)
+        assertEquals(128L, activities[0].quantity)
+        assertEquals("GATHER", activities[0].activityGroup)
+        // An unresolved tag is a normal node the HUD renders, not an error to hide.
+        assertEquals("NEEDS_ATTENTION", activities[1].activityGroup)
+        assertEquals("OPEN_TAG", activities[1].status)
+    }
+
+    @Test
+    fun `plan quantities survive past Int, because large plans exceed it`() {
+        val activity = json.decodeFromString(
+            PlanActivityDto.serializer(),
+            """{"item_id":"minecraft:oak_planks","name":"Oak Planks","quantity":3200000000,
+                "activity_group":"CRAFT","status":"RESOLVED"}""".trimIndent(),
+        )
+
+        // Decoding this into an Int field would wrap; the webapp emits a Long and so must the mod.
+        assertEquals(3_200_000_000L, activity.quantity)
+        assertTrue(activity.quantity > Int.MAX_VALUE)
+    }
 }
