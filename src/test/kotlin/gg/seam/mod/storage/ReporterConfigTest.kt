@@ -128,6 +128,58 @@ class ReporterConfigTest {
     }
 
     @Test
+    fun `connecting keeps the tuning it was not asked about`() {
+        val tuned = ReporterConfig(
+            apiBaseUrl = "http://localhost:8080",
+            seamWorldId = 3,
+            token = "old",
+            sweepSeconds = 120,
+            readsPerTick = 64,
+        )
+
+        // Rotating a token is a thing you do while thinking about something else. Resetting the
+        // sweep tunables on the way past would be silent, and the operator would find out weeks
+        // later from a tick graph.
+        val reconnected = ReporterConfig.connecting(tuned, worldId = 3, token = "new")
+
+        assertEquals("new", reconnected.token)
+        assertEquals(120, reconnected.sweepSeconds)
+        assertEquals(64, reconnected.readsPerTick)
+        assertEquals("http://localhost:8080", reconnected.apiBaseUrl, "the URL was not named, so it stands")
+    }
+
+    @Test
+    fun `connecting to a different world keeps the tuning but takes the new world`() {
+        val tuned = ReporterConfig(seamWorldId = 3, token = "t", sweepSeconds = 45, readsPerTick = 16)
+
+        val moved = ReporterConfig.connecting(tuned, worldId = 9, token = "t", baseUrl = "https://example.test/")
+
+        assertEquals(9, moved.seamWorldId)
+        assertEquals("https://example.test", moved.apiBaseUrl, "a trailing slash would double the /api/v1 join")
+        assertEquals(45, moved.sweepSeconds)
+        assertEquals(16, moved.readsPerTick)
+    }
+
+    @Test
+    fun `connecting with nothing already there falls back to the defaults`() {
+        val fresh = ReporterConfig.connecting(existing = null, worldId = 1, token = "t")
+
+        assertEquals(ReporterConfig.DEFAULT_SWEEP_SECONDS, fresh.sweepSeconds)
+        assertEquals(ReporterConfig.DEFAULT_READS_PER_TICK, fresh.readsPerTick)
+        assertEquals(ReporterConfig.defaultBaseUrl(), fresh.apiBaseUrl)
+        assertTrue(fresh.isConfigured)
+    }
+
+    @Test
+    fun `connecting clamps an absurd carried-forward value rather than trusting it`() {
+        val handEdited = ReporterConfig(seamWorldId = 1, token = "t", readsPerTick = 100_000)
+
+        val reconnected = ReporterConfig.connecting(handEdited, worldId = 1, token = "t")
+
+        assertTrue(reconnected.readsPerTick <= 256, "reads_per_tick=${reconnected.readsPerTick}")
+    }
+
+    @Test
     fun `toString does not carry the token`() {
         val rendered = ReporterConfig(seamWorldId = 3, token = "SEEDED-REPORTER-TOKEN").toString()
 

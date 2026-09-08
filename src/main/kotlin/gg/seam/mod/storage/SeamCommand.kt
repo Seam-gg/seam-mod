@@ -141,11 +141,11 @@ object SeamCommand {
         val worldId = IntegerArgumentType.getInteger(ctx, "world_id")
         val token = StringArgumentType.getString(ctx, "token")
 
-        val config = ReporterConfig(
-            apiBaseUrl = baseUrl?.trimEnd('/') ?: Reporter.config?.apiBaseUrl ?: ReporterConfig.defaultBaseUrl(),
-            seamWorldId = worldId,
-            token = token,
-        ).sanitised()
+        // The reporter may be off, in which case the file on disk still holds the tunables — a
+        // server configured but not yet started is a supported state, and `/seam connect` must not
+        // quietly reset `sweep_seconds` and `reads_per_tick` on the way past.
+        val existing = Reporter.config ?: ReporterConfig.load(log = log)
+        val config = ReporterConfig.connecting(existing, worldId, token, baseUrl)
 
         val saved = ReporterConfig.save(config)
         if (saved.isFailure) {

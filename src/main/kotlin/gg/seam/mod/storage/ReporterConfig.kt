@@ -96,6 +96,31 @@ data class ReporterConfig(
                 ?.trimEnd('/')
                 ?: PRODUCTION_BASE_URL
 
+        /**
+         * The config `/seam connect` should write, given what is already there.
+         *
+         * The command names a world, a token and optionally a URL — and **nothing else**, which is
+         * the trap: building a fresh [ReporterConfig] from those arguments alone resets
+         * `sweep_seconds` and `reads_per_tick` to their defaults. An operator who tuned them and
+         * then rotated a token would lose the tuning, silently, at the moment they were thinking
+         * about something else entirely. The tunables carry forward; only what was named changes.
+         *
+         * [existing] is the running config, or the file on disk when the reporter is off — a server
+         * that was configured but never started still has tunables worth keeping.
+         */
+        fun connecting(
+            existing: ReporterConfig?,
+            worldId: Int,
+            token: String,
+            baseUrl: String? = null,
+        ): ReporterConfig = ReporterConfig(
+            apiBaseUrl = baseUrl?.trimEnd('/') ?: existing?.apiBaseUrl ?: defaultBaseUrl(),
+            seamWorldId = worldId,
+            token = token,
+            sweepSeconds = existing?.sweepSeconds ?: DEFAULT_SWEEP_SECONDS,
+            readsPerTick = existing?.readsPerTick ?: DEFAULT_READS_PER_TICK,
+        ).sanitised()
+
         fun path(): Path = FabricLoader.getInstance().configDir.resolve(FILE_NAME)
 
         /**
