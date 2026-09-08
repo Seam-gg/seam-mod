@@ -342,5 +342,27 @@ Feedback is `source.sendFeedback({ Text.literal(...) }, broadcastToOps)` — the
 
 ---
 
+### Client commands share a namespace with server commands, and lose badly
+
+> Added 2026-09-08 while scoping the tagging gesture (MCO-261). Read from
+> `fabric-command-api-v2` 2.4.7's own source, not inferred.
+
+`ClientCommandRegistrationCallback` + `ClientCommandManager` register into a **separate dispatcher**
+that the client tries **first**. When it throws, only two exception types fall through to the
+server:
+
+```java
+// ClientCommandInternals.isIgnoredException
+return type == builtins.dispatcherUnknownCommand() || type == builtins.dispatcherParseException();
+```
+
+`dispatcherUnknownArgument` is **not** among them. So registering a client command whose root name
+matches a server command breaks the server one: `/seam tag` client-side means `/seam connect …`
+parses `/seam`, fails on `connect` with *unknown argument*, is reported as a client-side error, and
+**never reaches the server**. The failure lands on exactly the users who installed the mod.
+
+A client command must therefore take a root name no server command uses. This is why tagging is a
+gesture and a keybind rather than `/seam tag` — the mod already owns `/seam` on the server half.
+
 ## Source index
 Full per-slice source URLs are in the six agent transcripts. Primary anchors: `meta.fabricmc.net`, `maven.fabricmc.net/docs/yarn-1.21.11+build.3` (and build.4/.6), `docs.fabricmc.net/develop` (Mojmap — translate), Fabric release notes 2025-09-23 (1.21.9/.10) and 2025-12-05 (1.21.11), fabric-api issues #1130 (pickup) and #4902 (WorldRenderEvents redesign).

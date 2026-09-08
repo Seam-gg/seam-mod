@@ -1,6 +1,8 @@
 package gg.seam.mod.data
 
 import gg.seam.mod.api.ApiResult
+import gg.seam.mod.api.ContainerTagRequest
+import gg.seam.mod.api.OkResponse
 import gg.seam.mod.api.SeamApi
 import gg.seam.mod.api.SeamApiClient
 import gg.seam.mod.api.SyncResourceItem
@@ -19,9 +21,11 @@ data class TaskRef(val projectId: Int, val taskId: Int)
 data class FlushResult(
     val syncedProjects: Set<Int> = emptySet(),
     val syncedTasks: List<TaskRef> = emptyList(),
+    /** Keys of container-tag intents that reached Seam (MCO-261). */
+    val syncedContainerTags: List<String> = emptyList(),
     val failure: String? = null,
 ) {
-    val pushed: Int get() = syncedProjects.size + syncedTasks.size
+    val pushed: Int get() = syncedProjects.size + syncedTasks.size + syncedContainerTags.size
 }
 
 /** Where the last push got to. The notebook footer renders this next to the queued-writes count. */
@@ -101,11 +105,63 @@ object SeamSync {
             }
         }
 
+        // Container tags (MCO-261). Ordered after the rest for no reason beyond determinism; they
+        // share the queue but nothing else touches the same rows.
+        val worldId = data.seamWorldId
+        for (pending in data.pendingContainerTags.values.sortedBy { it.key }) {
+            chain = chain.thenCompose { acc ->
+                if (acc.failure != null) return@thenCompose CompletableFuture.completedFuture(acc)
+                if (worldId == null) {
+                    // Nothing to address the write to. Dropping beats retrying forever: the world
+                    // binding is gone, so this tag names a project id that means nothing now.
+                    return@thenCompose CompletableFuture.completedFuture(
+                        acc.copy(syncedContainerTags = acc.syncedContainerTags + pending.key),
+                    )
+                }
+                pushContainerTag(client, worldId, pending).thenApply { result ->
+                    when (result) {
+                        is ApiResult.Ok -> acc.copy(syncedContainerTags = acc.syncedContainerTags + pending.key)
+                        // A container untagged in the web app, or a project deleted, 404s. Retrying
+                        // forever would wedge the whole queue behind it, so treat it as done.
+                        is ApiResult.Error ->
+                            if (result.status == 404) acc.copy(syncedContainerTags = acc.syncedContainerTags + pending.key)
+                            else acc.copy(failure = result.describe())
+                        is ApiResult.Failure -> acc.copy(failure = result.describe())
+                    }
+                }
+            }
+        }
+
         return chain.thenApply { result ->
             commit(result)
             state = if (result.failure != null) SyncState.Failed(result.failure) else SyncState.Synced(now())
             result
         }
+    }
+
+    /**
+     * One queued intent, as the API call it stands for.
+     *
+     * An untag with no [PendingContainerTag.containerId] is a tag that never reached Seam in the
+     * first place — there is no row to delete, so the intent is satisfied by dropping it.
+     */
+    private fun pushContainerTag(
+        client: SeamApiClient,
+        worldId: Int,
+        pending: PendingContainerTag,
+    ): CompletableFuture<out ApiResult<*>> = when {
+        pending.projectId != null -> client.tagContainer(
+            worldId,
+            ContainerTagRequest(
+                dimension = pending.dimension,
+                x = pending.x, y = pending.y, z = pending.z,
+                projectId = pending.projectId,
+                kind = pending.kind,
+                groupKey = pending.groupKey,
+            ),
+        )
+        pending.containerId != null -> client.untagContainer(worldId, pending.containerId)
+        else -> CompletableFuture.completedFuture(ApiResult.Ok(OkResponse()))
     }
 
     /**
@@ -119,6 +175,7 @@ object SeamSync {
             var next = data
             result.syncedProjects.forEach { next = next.withProjectReset(it) }
             result.syncedTasks.forEach { next = next.withoutPendingTask(it.projectId, it.taskId) }
+            result.syncedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
             next
         }
     }

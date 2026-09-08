@@ -9,6 +9,8 @@ import gg.seam.mod.data.SeamSync
 import gg.seam.mod.data.WorldDataStore
 import gg.seam.mod.data.WorldKey
 import gg.seam.mod.screen.NotebookScreen
+import gg.seam.mod.tag.ContainerTagStore
+import gg.seam.mod.tag.TagGesture
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
 import net.minecraft.client.option.KeyBinding
 import net.minecraft.client.util.InputUtil
@@ -33,6 +35,7 @@ object SeamClient : ClientModInitializer {
     val logger = LoggerFactory.getLogger(MOD_ID)
 
     private lateinit var openNotebookKey: KeyBinding
+    private lateinit var tagContainerKey: KeyBinding
 
     override fun onInitializeClient() {
         openNotebookKey = KeyBindingHelper.registerKeyBinding(
@@ -45,9 +48,26 @@ object SeamClient : ClientModInitializer {
             ),
         )
 
+        // The second way into the tag picker (MCO-261). The gesture — empty hand, sneak,
+        // right-click — is the primary one; this exists because a builder's hotbar is rarely empty
+        // and emptying a hand to tag a chest is a silly thing to have to do.
+        tagContainerKey = KeyBindingHelper.registerKeyBinding(
+            KeyBinding(
+                "key.seam_notebook.tag_container",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_B,
+                KeyBinding.Category.create(Identifier.of(MOD_ID, "general")),
+            ),
+        )
+
+        TagGesture.register()
+
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             while (openNotebookKey.wasPressed()) {
                 client.setScreen(NotebookScreen())
+            }
+            while (tagContainerKey.wasPressed()) {
+                TagGesture.openForCrosshairTarget(client)
             }
         }
 
@@ -72,6 +92,7 @@ object SeamClient : ClientModInitializer {
             WorldDataStore.unload()
             // Drop the cache too, so a second world never renders the first one's projects.
             SeamDataStore.clear()
+            ContainerTagStore.clear()
             SeamSync.clear()
         }
 
