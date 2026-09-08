@@ -220,6 +220,7 @@ Everything here was checked against `minecraft-merged-1.21.11-…-yarn.1.21.11+b
 | the inventory | `world.getBlockEntity(pos) as? Inventory` | Must run **on the server thread** — world access is not thread-safe. |
 | double chests | `ChestBlock.getInventory(ChestBlock, BlockState, World, BlockPos, boolean)` | Returns the **combined** `DoubleInventory` from *either* half — so reading both halves double-counts. Read one and report the other as empty; see the warning below about picking it. |
 | shulker contents | `stack.get(DataComponentTypes.CONTAINER)` → `ContainerComponent.streamNonEmpty()` | One level deep; vanilla shulkers do not nest. Without this a shulker-based base reports near-zero. |
+| which blocks count | `is ChestBlock` / `BarrelBlock` / `ShulkerBoxBlock` / `HopperBlock` / `DispenserBlock` | **Not `as? Inventory`** — a furnace is one. Type checks are exhaustive for free: `TrappedChestBlock : ChestBlock`, `DropperBlock : DispenserBlock`, every shulker colour is a `ShulkerBoxBlock`. `EnderChestBlock` extends `AbstractChestBlock` **directly**, so `is ChestBlock` excludes per-player storage without a special case. |
 | the tick hook | `ServerTickEvents.END_SERVER_TICK` | Also `START_SERVER_TICK`, `START_WORLD_TICK`, `END_WORLD_TICK`. |
 
 ### Getting off the server thread and back on again

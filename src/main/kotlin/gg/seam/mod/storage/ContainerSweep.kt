@@ -1,6 +1,10 @@
 package gg.seam.mod.storage
 
+import net.minecraft.block.BarrelBlock
 import net.minecraft.block.ChestBlock
+import net.minecraft.block.DispenserBlock
+import net.minecraft.block.HopperBlock
+import net.minecraft.block.ShulkerBoxBlock
 import net.minecraft.component.DataComponentTypes
 import net.minecraft.inventory.Inventory
 import net.minecraft.registry.Registries
@@ -118,20 +122,33 @@ object ContainerSweep {
     }
 
     /**
-     * The inventory at a position, or null when the block is gone or is not a container.
+     * The inventory at a position, or null when the block is gone or is not a **taggable** container.
+     *
+     * The whitelist matters, and `as? Inventory` is not it: a furnace is an `Inventory`, and a tag
+     * whose chest has since been replaced by one would otherwise start reporting its fuel and its
+     * input as project stock. The webapp refuses to *create* a tag on a furnace (`container_tags`'
+     * `kind` CHECK constraint), but nothing stops the block at a tagged position changing later, so
+     * the sweep has to hold the same line. Mirrors that constraint — change both together.
+     *
+     * Type checks rather than registry ids, because they are exhaustive for free:
+     * `TrappedChestBlock` is a `ChestBlock`, `DropperBlock` is a `DispenserBlock`, and every one of
+     * the seventeen shulker box colours is a `ShulkerBoxBlock`. An **ender chest is deliberately
+     * not** one — `EnderChestBlock` extends `AbstractChestBlock` directly, not `ChestBlock` — which
+     * is what keeps per-player storage out of a shared count (decision D1).
      *
      * For a chest this asks for the **combined** inventory, which is what
      * `ChestBlock.getInventory(..., true)` returns from *either* half of a joined pair.
      */
     private fun inventoryAt(world: ServerWorld, pos: BlockPos): Inventory? {
         val state = world.getBlockState(pos)
-        val block = state.block
-        if (block is ChestBlock) {
+        return when (val block = state.block) {
             // `false` would ignore a blocked chest (an ocelot or a solid block above it). The stock
             // is in there either way, so read it regardless of whether a player could open it.
-            return ChestBlock.getInventory(block, state, world, pos, true)
+            is ChestBlock -> ChestBlock.getInventory(block, state, world, pos, true)
+            is BarrelBlock, is ShulkerBoxBlock, is HopperBlock, is DispenserBlock ->
+                world.getBlockEntity(pos) as? Inventory
+            else -> null
         }
-        return world.getBlockEntity(pos) as? Inventory
     }
 
     /**
