@@ -106,6 +106,37 @@ class SeamApiClient(
                 .build()
         }
 
+    // ── Reporter (MCO-532 / MCO-535) ───────────────────────────────────────────
+
+    /**
+     * `GET /reporter/tags` — the containers to sweep and the items worth reporting from them.
+     *
+     * [worldId] is omitted on a dedicated server, whose reporter token already fixes its world, and
+     * required in singleplayer, where the sweep authenticates with the player's own token and
+     * nothing else says which Seam world this is.
+     */
+    fun getReporterTags(worldId: Int? = null): CompletableFuture<ApiResult<ReporterTagsResponse>> =
+        send(ReporterTagsResponse.serializer()) {
+            val suffix = worldId?.let { "?world_id=${it.pathSegment()}" }.orEmpty()
+            request("/reporter/tags$suffix").GET().build()
+        }
+
+    /**
+     * `POST /reporter/contents` — an absolute set for the containers it names.
+     *
+     * Name only containers whose contents changed; everything unnamed keeps what it had. An empty
+     * push is valid and is the heartbeat.
+     */
+    fun pushReporterContents(
+        body: ReporterContentsRequest,
+    ): CompletableFuture<ApiResult<ReporterContentsResponse>> =
+        send(ReporterContentsResponse.serializer()) {
+            request("/reporter/contents")
+                .POST(jsonBody(ReporterContentsRequest.serializer(), body))
+                .header("Content-Type", JSON)
+                .build()
+        }
+
     // ── Plumbing ───────────────────────────────────────────────────────────────
 
     /**

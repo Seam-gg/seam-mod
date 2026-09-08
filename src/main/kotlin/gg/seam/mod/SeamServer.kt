@@ -1,10 +1,9 @@
 package gg.seam.mod
 
-import gg.seam.mod.api.SeamApiClient
+import gg.seam.mod.storage.Reporter
 import gg.seam.mod.storage.ReporterConfig
-import gg.seam.mod.storage.ReporterService
+import gg.seam.mod.storage.SeamCommand
 import net.fabricmc.api.ModInitializer
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
 import org.slf4j.LoggerFactory
 
@@ -27,46 +26,25 @@ object SeamServer : ModInitializer {
 
     private val log = LoggerFactory.getLogger("${SeamClient.MOD_ID}-server")
 
-    private var service: ReporterService? = null
-
     override fun onInitialize() {
+        SeamCommand.register(log)
+
         val config = ReporterConfig.load(log = log)
 
-        // An unconfigured server is a SUPPORTED state, not an error. Someone installing the jar for
-        // the client half alone should see one line explaining how to turn the reporter on, and
-        // then never hear from it again — never a warning per tick.
+        // An unconfigured server is a SUPPORTED state, not an error. One line, pointing at the
+        // command that fixes it — not at a JSON file the operator would have to write by hand and
+        // restart for. Then silence: never a warning per tick.
         if (config == null || !config.isConfigured) {
-            log.info(
-                "Seam reporter is off. To turn it on, put api_base_url, seam_world_id and a " +
-                    "reporter token (world settings → Connected server) in {}",
-                ReporterConfig.path(),
-            )
-            return
-        }
-
-        log.info(
-            "Seam reporter is on for world {} at {} (sweeping every {}s, {} containers per tick)",
-            config.seamWorldId, config.apiBaseUrl, config.sweepSeconds, config.readsPerTick,
-        )
-
-        val api = SeamApiClient(
-            baseUrl = { config.apiBaseUrl },
-            token = { config.token },
-            userAgent = "SeamNotebook reporter/${ReporterService.REPORTER_VERSION}",
-        )
-
-        ServerLifecycleEvents.SERVER_STARTED.register {
-            service = ReporterService(config, api, log)
-        }
-
-        ServerLifecycleEvents.SERVER_STOPPING.register {
-            service = null
+            log.info("Seam reporter is off. Turn it on with:  /seam connect <world_id> <token>")
+            log.info("  Get a token from the webapp: world settings → Connected server.")
+            log.info("  Run it from this console — a command typed in-game lands in the server log.")
+        } else {
+            Reporter.start(config, log)
         }
 
         // END_SERVER_TICK, so a read sees the tick's completed state rather than a half-applied one.
-        // The service reads a bounded number of containers here and does its HTTP off-thread.
-        ServerTickEvents.END_SERVER_TICK.register { server ->
-            service?.tick(server)
-        }
+        // The reporter reads a bounded number of containers here and does its HTTP off-thread; this
+        // is a no-op while it is off.
+        ServerTickEvents.END_SERVER_TICK.register { server -> Reporter.tick(server) }
     }
 }

@@ -96,6 +96,38 @@ class ReporterConfigTest {
     }
 
     @Test
+    fun `save then load round-trips, and writes every tunable`() {
+        val path = dir.resolve("written-${System.nanoTime()}.json")
+        val original = ReporterConfig(
+            apiBaseUrl = "http://localhost:8080",
+            seamWorldId = 7,
+            token = "abc",
+            sweepSeconds = 45,
+            readsPerTick = 12,
+        )
+
+        assertTrue(ReporterConfig.save(original, path).isSuccess)
+        assertEquals(original, ReporterConfig.load(path, log))
+
+        // The file is meant to be opened and hand-tuned, so a tunable sitting at its default must
+        // still appear — otherwise nobody knows it is there to change.
+        val written = Files.readString(path)
+        assertTrue(written.contains("sweep_seconds"), written)
+        assertTrue(written.contains("reads_per_tick"), written)
+        assertTrue(written.contains("api_base_url"), written)
+    }
+
+    @Test
+    fun `a saved config with defaults still names every field`() {
+        val path = dir.resolve("defaults-${System.nanoTime()}.json")
+        ReporterConfig.save(ReporterConfig(seamWorldId = 1, token = "t"), path)
+
+        val written = Files.readString(path)
+        assertTrue(written.contains("sweep_seconds"), "defaults must be written, not omitted: $written")
+        assertTrue(written.contains("reads_per_tick"), written)
+    }
+
+    @Test
     fun `toString does not carry the token`() {
         val rendered = ReporterConfig(seamWorldId = 3, token = "SEEDED-REPORTER-TOKEN").toString()
 

@@ -51,6 +51,7 @@ The single most valuable output of the sweep. Every one of these will silently b
 | H9 | **`assets/<ns>/items/<name>.json`** item-model definition required | **1.21.4** | Notebook item asset. |
 | H10 | **Fabric docs site now renders Mojmap + a newer-snapshot render model** (`extractRenderState`, `Component`, `addRenderableWidget`) that does NOT match 1.21.11 Yarn | current | Don't copy the docs site's render/GUI prose verbatim — translate names, ignore `extractRenderState`. |
 | H11 | **HUD rendering** — `HudRenderCallback` superseded by `…rendering.v1.hud.HudElementRegistry` + `HudElement.render(DrawContext, RenderTickCounter)`, ordered against `VanillaHudElements.*` | **fabric-api ≥1.21.6** | The storage HUD (§9). Verified against `fabric-rendering-v1` 16.2.10 in this project's own dependency graph. |
+| H12 | **Command permissions are predicates, not ints** — `ServerCommandSource.hasPermissionLevel(int)` **removed**; use `CommandManager.OWNERS_CHECK.allows(source.permissions)` and friends from `net.minecraft.command.permission` | **1.21.11** | `/seam` (§10). Every command tutorial in existence calls the removed method, so this fails to compile the moment you copy one. |
 
 **Mappings:** all snippets below are **Yarn**. If the build uses Mojmap, translate (`MinecraftClient`→`Minecraft`, `Text`→`Component`, `ButtonWidget`→`Button`, `addDrawableChild`→`addRenderableWidget`, `Identifier`→`ResourceLocation`, etc.). Pick one and stay consistent.
 
@@ -238,6 +239,83 @@ HudElementRegistry.attachElementAfter(
 - Respect `client.options.hudHidden` (F1), and hide while a `Screen` is open.
 
 Still the highest-churn area in the codebase (H1). **Spike it before building on it.**
+
+---
+
+## 10. Server commands, and the permission rewrite (H12)
+
+> Added 2026-09-08 while building `/seam` (MCO-534). Verified by `javap` against
+> `minecraft-merged-1.21.11-…-yarn.1.21.11+build.6` and by compiling — not from a tutorial.
+
+Registration is unchanged from the familiar shape, via `fabric-command-api-v2` (on the classpath
+already through the full `fabric-api` dependency):
+
+```kotlin
+CommandRegistrationCallback.EVENT.register { dispatcher, _, _ ->
+    dispatcher.register(
+        CommandManager.literal("seam")
+            .requires { CommandManager.OWNERS_CHECK.allows(it.permissions) }
+            .then(CommandManager.literal("status").executes { ... })
+            .then(
+                CommandManager.literal("connect")
+                    .then(CommandManager.argument("world_id", IntegerArgumentType.integer(1))
+                        .then(CommandManager.argument("token", StringArgumentType.string())
+                            .executes { ... })),
+            ),
+    )
+}
+```
+
+### ⚠ `hasPermissionLevel(int)` is gone
+
+**This is the trap, and it is not in any tutorial yet.** `ServerCommandSource.hasPermissionLevel(int)`
+— the thing every command example calls — **does not exist on 1.21.11**. It was replaced by a
+predicate system in `net.minecraft.command.permission`:
+
+| old | 1.21.11 |
+|---|---|
+| `source.hasPermissionLevel(4)` | `CommandManager.OWNERS_CHECK.allows(source.permissions)` |
+| `source.hasPermissionLevel(3)` | `CommandManager.ADMINS_CHECK.allows(source.permissions)` |
+| `source.hasPermissionLevel(2)` | `CommandManager.GAMEMASTERS_CHECK.allows(source.permissions)` |
+| `source.hasPermissionLevel(1)` | `CommandManager.MODERATORS_CHECK.allows(source.permissions)` |
+| *(no gate)* | `CommandManager.ALWAYS_PASS_CHECK` |
+
+The pieces, for when the ready-made constants are not enough:
+
+- `ServerCommandSource.getPermissions(): PermissionPredicate` (Kotlin: `source.permissions`) — what
+  the caller *has*. Also `withPermissions` / `withAdditionalPermissions` to derive a source.
+- `PermissionCheck.allows(PermissionPredicate): Boolean` — what a command *requires*.
+  `CommandManager` exposes the five constants above; they are `PermissionCheck`, not `Predicate`, so
+  they cannot be passed straight to `.requires { }` — ask them.
+- `PermissionLevel` is still an enum with the familiar rungs — `ALL, MODERATORS, GAMEMASTERS,
+  ADMINS, OWNERS` — plus `fromLevel(int)`, `getLevel()` and `isAtLeast(PermissionLevel)`, if a
+  numeric level has to be bridged.
+
+### Brigadier string arguments — a URL will not parse with `string()`
+
+Not a 1.21.11 change, but the same class of trap and it cost a real debugging round here.
+`StringArgumentType` has three modes, and the difference bites on anything URL-shaped:
+
+| type | reads |
+|---|---|
+| `word()` | one unquoted word: `[A-Za-z0-9_.+-]` only |
+| `string()` | a **quoted** string, or an unquoted word — same restricted alphabet |
+| `greedyString()` | the rest of the line, verbatim |
+
+So `/seam connect 3 tok http://localhost:8080` fails with **"Expected whitespace to end one
+argument, but found trailing data"**, pointing at the `:` — because `string()` fell back to word
+parsing and `:` and `/` are not word characters. Either quote the argument or, for a trailing one,
+use `greedyString()`. Found by running the command, not by reading it.
+
+### Command sources and secrets
+
+`ServerCommandSource.entity` is null when the command came from the server console. Worth checking
+before accepting anything secret: Minecraft logs commands players run, so a token typed in-game is
+in the server log afterwards. `/seam connect` allows it and says so rather than refusing, because
+the remedy (revoke and re-mint) is cheap and only obvious if someone points it out.
+
+Feedback is `source.sendFeedback({ Text.literal(...) }, broadcastToOps)` — the message is a
+**supplier**, evaluated only if it is actually going to be shown — and `source.sendError(Text)`.
 
 ---
 

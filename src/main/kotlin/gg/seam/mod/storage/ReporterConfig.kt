@@ -7,6 +7,7 @@ import net.fabricmc.loader.api.FabricLoader
 import org.slf4j.Logger
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermission
 
 /**
  * The server half's configuration — `config/seam-notebook-server.json`, read once at server start
@@ -58,6 +59,12 @@ data class ReporterConfig(
         private val json = Json {
             ignoreUnknownKeys = true
             isLenient = true
+            // Write every field, including the ones at their defaults. This file is meant to be
+            // opened and hand-tuned, and a tunable you cannot see is a tunable you do not know
+            // exists — `/seam connect` would otherwise write three keys and hide sweep_seconds and
+            // reads_per_tick entirely.
+            encodeDefaults = true
+            prettyPrint = true
         }
 
         /** Non-reversible placeholder that keeps the length — enough to tell empty from wrong. */
@@ -68,6 +75,27 @@ data class ReporterConfig(
         }
 
         fun path(): Path = FabricLoader.getInstance().configDir.resolve(FILE_NAME)
+
+        /**
+         * Writes the config, creating the directory if needed. Used by `/seam connect`, so an
+         * operator never has to hand-edit JSON to turn the reporter on.
+         *
+         * Best-effort file permissions: the file holds a live credential, so on a POSIX filesystem
+         * it is made owner-only. A filesystem that does not support that (a Windows server, a
+         * container with an odd mount) is not a reason to fail the write — the token is no less
+         * protected than it would have been in a hand-written file.
+         */
+        fun save(config: ReporterConfig, path: Path = path()): Result<Unit> = runCatching {
+            Files.createDirectories(path.parent)
+            Files.writeString(path, json.encodeToString(serializer(), config.sanitised()))
+            runCatching {
+                Files.setPosixFilePermissions(
+                    path,
+                    setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+                )
+            }
+            Unit
+        }
 
         /**
          * Reads the config, or returns null when there is nothing to read.
