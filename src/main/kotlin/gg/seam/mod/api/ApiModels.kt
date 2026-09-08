@@ -209,3 +209,102 @@ data class PlanActivityDto(
     @SerialName("activity_group") val activityGroup: String = "OTHER",
     @SerialName("status") val status: String = "RESOLVED",
 )
+
+// ── The reporter: tags in, contents out (MCO-532) ──────────────────────────────
+
+/**
+ * The items one project's sweep should bother reporting — its target items plus its plan items.
+ *
+ * Report only these. Reporting everything found would send the webapp an inventory of somebody's
+ * junk drawer, and quietly turn it into a whole-world item census.
+ */
+@Serializable
+data class ItemsOfInterestDto(
+    @SerialName("project_id") val projectId: Int,
+    @SerialName("item_ids") val itemIds: List<String> = emptyList(),
+)
+
+/**
+ * `GET /reporter/tags` — everything the sweep needs: which containers to read, and which items are
+ * worth reporting from them. Re-pulled every ~60s, `items_of_interest` along with it.
+ */
+@Serializable
+data class ReporterTagsResponse(
+    @SerialName("world_id") val worldId: Int = 0,
+    @SerialName("containers") val containers: List<ContainerTagDto> = emptyList(),
+    @SerialName("items_of_interest") val itemsOfInterest: List<ItemsOfInterestDto> = emptyList(),
+)
+
+@Serializable
+data class ReportedItemDto(
+    @SerialName("item_id") val itemId: String,
+    @SerialName("count") val count: Long,
+)
+
+/**
+ * One container as the sweep found it.
+ *
+ * [state] is `ok`, `unreadable` (the chunk has not been loaded since tagging) or `missing` (the
+ * block is gone). Only `ok` should carry [items]; the other two mean "do not count this", and the
+ * webapp drops whatever it held.
+ */
+@Serializable
+data class ReportedContainerDto(
+    @SerialName("id") val id: Long,
+    @SerialName("state") val state: String,
+    @SerialName("seen_at") val seenAt: String,
+    @SerialName("items") val items: List<ReportedItemDto> = emptyList(),
+)
+
+/**
+ * `POST /reporter/contents` — a sweep's report.
+ *
+ * **Absolute for the containers it names.** Name only those whose contents changed since the last
+ * push; everything unnamed keeps what it had, which is what lets a container in an unloaded chunk
+ * go on counting. One writer means absolute is correct and self-healing — there is nothing to merge
+ * and no ordering hazard, and a reporter restart costs one full re-push rather than a resync
+ * protocol. That is why the reporter needs no memory of its own.
+ *
+ * [worldId] is omitted on a dedicated server, whose reporter token already fixes its world, and is
+ * **required in singleplayer**, where the sweep pushes with the player's own token and nothing else
+ * says which Seam world this is.
+ *
+ * An empty [containers] list is a valid push and is the heartbeat — there is no separate endpoint
+ * for it, so a sweep with nothing to say should still send one.
+ */
+@Serializable
+data class ReporterContentsRequest(
+    @SerialName("world_id") val worldId: Int? = null,
+    @SerialName("swept_at") val sweptAt: String? = null,
+    @SerialName("reporter_version") val reporterVersion: String? = null,
+    @SerialName("containers") val containers: List<ReportedContainerDto> = emptyList(),
+)
+
+@Serializable
+data class ReporterContentsResponse(
+    @SerialName("accepted") val accepted: Int = 0,
+    /** Named containers the server would not accept — not this world's. Worth logging. */
+    @SerialName("rejected") val rejected: Int = 0,
+    @SerialName("projects_recomputed") val projectsRecomputed: Int = 0,
+)
+
+// ── The HUD's count poll (MCO-532) ─────────────────────────────────────────────
+
+/**
+ * One measured count, from `GET /worlds/{id}/storage` — the frequent poll (~10s), deliberately
+ * cheap. Never put the plan on this cadence.
+ *
+ * [measured] is what is in tagged containers. It is **not** [ResourceDto.collected], which stays
+ * the human's typed-in number; the HUD shows `measured` over `required`, and the webapp is where
+ * their disagreement gets resolved.
+ *
+ * [oldestSeenAt] is the oldest contributing reading — how much to trust the number.
+ */
+@Serializable
+data class WorldStorageDto(
+    @SerialName("project_id") val projectId: Int,
+    @SerialName("item_id") val itemId: String,
+    @SerialName("measured") val measured: Long = 0,
+    @SerialName("container_count") val containerCount: Int = 0,
+    @SerialName("oldest_seen_at") val oldestSeenAt: String? = null,
+)

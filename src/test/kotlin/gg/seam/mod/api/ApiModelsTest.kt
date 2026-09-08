@@ -239,4 +239,114 @@ class ApiModelsTest {
         assertEquals(3_200_000_000L, activity.quantity)
         assertTrue(activity.quantity > Int.MAX_VALUE)
     }
+
+    // ── The reporter (MCO-532) ─────────────────────────────────────────────────
+
+    @Test
+    fun `reporter tags carry the containers and what is worth reporting from them`() {
+        val decoded = json.decodeFromString(
+            ReporterTagsResponse.serializer(),
+            """
+            {
+              "world_id": 3,
+              "containers": [
+                {"id":42,"project_id":7,"dimension":"minecraft:overworld","x":1,"y":64,"z":2,
+                 "group_key":"1,64,2","kind":"chest","tagged_at":"2026-09-08T07:30:00Z","state":"ok"}
+              ],
+              "items_of_interest": [
+                {"project_id":7,"item_ids":["minecraft:hopper","minecraft:iron_ingot"]}
+              ]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(3, decoded.worldId)
+        assertEquals(42L, decoded.containers.single().id)
+        val interest = decoded.itemsOfInterest.single()
+        assertEquals(7, interest.projectId)
+        // The target the build asks for, and the plan item you actually go and mine.
+        assertEquals(listOf("minecraft:hopper", "minecraft:iron_ingot"), interest.itemIds)
+    }
+
+    @Test
+    fun `a contents push encodes as an absolute set for the containers it names`() {
+        val encoded = json.encodeToString(
+            ReporterContentsRequest.serializer(),
+            ReporterContentsRequest(
+                sweptAt = "2026-09-08T10:00:00Z",
+                reporterVersion = "0.3.0+1.21.11",
+                containers = listOf(
+                    ReportedContainerDto(
+                        id = 42,
+                        state = "ok",
+                        seenAt = "2026-09-08T10:00:00Z",
+                        items = listOf(ReportedItemDto("minecraft:iron_ingot", 12)),
+                    ),
+                ),
+            ),
+        )
+
+        // world_id is omitted on a dedicated server — the reporter token already fixes the world.
+        assertTrue(!encoded.contains("world_id"), "world_id should be absent when null: $encoded")
+        assertTrue(encoded.contains(""""swept_at":"2026-09-08T10:00:00Z""""))
+        assertTrue(encoded.contains(""""item_id":"minecraft:iron_ingot","count":12"""))
+    }
+
+    @Test
+    fun `singleplayer names the world, because the player token does not fix one`() {
+        val encoded = json.encodeToString(
+            ReporterContentsRequest.serializer(),
+            ReporterContentsRequest(worldId = 3, containers = emptyList()),
+        )
+
+        assertTrue(encoded.contains(""""world_id":3"""))
+        // An empty push is the heartbeat; there is no separate endpoint for it. This codec omits
+        // defaults, so the empty list is simply absent from the wire — and the webapp's own model
+        // defaults `containers` to empty, so an omitted list and an explicit `[]` mean the same
+        // thing. What must survive is the round trip.
+        assertTrue(!encoded.contains("containers"), "an empty list is omitted, not sent: $encoded")
+        val roundTripped = json.decodeFromString(ReporterContentsRequest.serializer(), encoded)
+        assertEquals(3, roundTripped.worldId)
+        assertTrue(roundTripped.containers.isEmpty())
+    }
+
+    @Test
+    fun `an unreadable container carries no items, so its stock stops counting`() {
+        val encoded = json.encodeToString(
+            ReportedContainerDto.serializer(),
+            ReportedContainerDto(id = 9, state = "missing", seenAt = "2026-09-08T10:05:00Z"),
+        )
+
+        assertTrue(encoded.contains(""""state":"missing""""))
+        // The state is what makes the webapp drop this container's stock; carrying no items is the
+        // consequence, and an omitted empty list decodes back to exactly that.
+        val roundTripped = json.decodeFromString(ReportedContainerDto.serializer(), encoded)
+        assertEquals("missing", roundTripped.state)
+        assertTrue(roundTripped.items.isEmpty())
+    }
+
+    @Test
+    fun `a storage count decodes, and measured is not collected`() {
+        val rows = json.decodeFromString(
+            kotlinx.serialization.builtins.ListSerializer(WorldStorageDto.serializer()),
+            """[{"project_id":7,"item_id":"minecraft:iron_ingot","measured":3200000000,
+                 "container_count":4,"oldest_seen_at":"2026-09-08T09:58:00Z"}]""".trimIndent(),
+        )
+
+        val row = rows.single()
+        assertEquals(3_200_000_000L, row.measured, "measured is a Long, like plan quantities")
+        assertEquals(4, row.containerCount)
+        assertEquals("2026-09-08T09:58:00Z", row.oldestSeenAt)
+    }
+
+    @Test
+    fun `a world with no reading yet decodes with a null oldest_seen_at`() {
+        val row = json.decodeFromString(
+            WorldStorageDto.serializer(),
+            """{"project_id":7,"item_id":"minecraft:iron_ingot","measured":0,"container_count":0,"oldest_seen_at":null}""",
+        )
+
+        assertEquals(0L, row.measured)
+        assertNull(row.oldestSeenAt)
+    }
 }
