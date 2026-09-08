@@ -51,6 +51,7 @@ The single most valuable output of the sweep. Every one of these will silently b
 | H9 | **`assets/<ns>/items/<name>.json`** item-model definition required | **1.21.4** | Notebook item asset. |
 | H10 | **Fabric docs site now renders Mojmap + a newer-snapshot render model** (`extractRenderState`, `Component`, `addRenderableWidget`) that does NOT match 1.21.11 Yarn | current | Don't copy the docs site's render/GUI prose verbatim — translate names, ignore `extractRenderState`. |
 | H11 | **HUD rendering** — `HudRenderCallback` superseded by `…rendering.v1.hud.HudElementRegistry` + `HudElement.render(DrawContext, RenderTickCounter)`, ordered against `VanillaHudElements.*` | **fabric-api ≥1.21.6** | The storage HUD (§9). Verified against `fabric-rendering-v1` 16.2.10 in this project's own dependency graph. |
+| H12 | **Command permissions are predicates, not ints** — `ServerCommandSource.hasPermissionLevel(int)` **removed**; use `CommandManager.OWNERS_CHECK.allows(source.permissions)` and friends from `net.minecraft.command.permission` | **1.21.11** | `/seam` (§10). Every command tutorial in existence calls the removed method, so this fails to compile the moment you copy one. |
 
 **Mappings:** all snippets below are **Yarn**. If the build uses Mojmap, translate (`MinecraftClient`→`Minecraft`, `Text`→`Component`, `ButtonWidget`→`Button`, `addDrawableChild`→`addRenderableWidget`, `Identifier`→`ResourceLocation`, etc.). Pick one and stay consistent.
 
@@ -201,7 +202,7 @@ So the constraint is unchanged and the mitigation is inverted: **do not** reach 
 
 ## 9. Server side: containers & the HUD
 
-> **Forward-looking (2026-09-06).** None of this is built yet — it is the verified API surface for the *Shared Storage* project (MCO-534, MCO-260, MCO-537). Recorded here rather than in an issue because these are facts about 1.21.11, and they will outlive the issues.
+> **Built 2026-09-08** (MCO-534, MCO-260, MCO-535) and exercised against a real mc-org; the HUD half (MCO-537) is still forward-looking. Recorded here rather than in an issue because these are facts about 1.21.11 and they outlive the issues.
 
 Everything here was checked against `minecraft-merged-1.21.11-…-yarn.1.21.11+build.6` and the Fabric API jars in this project's dependency graph — **not** against the docs site (H10).
 
@@ -217,9 +218,32 @@ Everything here was checked against `minecraft-merged-1.21.11-…-yarn.1.21.11+b
 |---|---|---|
 | chunk guard | `ServerWorld.isChunkLoaded(long)` + `ChunkPos.toLong(BlockPos)` | An unloaded container **cannot have changed** — keep its last reading rather than re-reading it. |
 | the inventory | `world.getBlockEntity(pos) as? Inventory` | Must run **on the server thread** — world access is not thread-safe. |
-| double chests | `ChestBlock.getInventory(ChestBlock, BlockState, World, BlockPos, boolean)` | Returns the **combined** `DoubleInventory` from *either* half — so reading both halves double-counts. Dedupe to one canonical position. |
+| double chests | `ChestBlock.getInventory(ChestBlock, BlockState, World, BlockPos, boolean)` | Returns the **combined** `DoubleInventory` from *either* half — so reading both halves double-counts. Read one and report the other as empty; see the warning below about picking it. |
 | shulker contents | `stack.get(DataComponentTypes.CONTAINER)` → `ContainerComponent.streamNonEmpty()` | One level deep; vanilla shulkers do not nest. Without this a shulker-based base reports near-zero. |
+| which blocks count | `is ChestBlock` / `BarrelBlock` / `ShulkerBoxBlock` / `HopperBlock` / `DispenserBlock` | **Not `as? Inventory`** — a furnace is one. Type checks are exhaustive for free: `TrappedChestBlock : ChestBlock`, `DropperBlock : DispenserBlock`, every shulker colour is a `ShulkerBoxBlock`. `EnderChestBlock` extends `AbstractChestBlock` **directly**, so `is ChestBlock` excludes per-player storage without a special case. |
 | the tick hook | `ServerTickEvents.END_SERVER_TICK` | Also `START_SERVER_TICK`, `START_WORLD_TICK`, `END_WORLD_TICK`. |
+
+### Getting off the server thread and back on again
+
+The sweep reads on the server thread and does its HTTP off it, so results have to come back. Both
+routes are real; they are not equivalent.
+
+| route | API | when |
+|---|---|---|
+| hand a task to the server thread | `MinecraftServer.execute(Runnable)` (inherited from `ThreadExecutor`, which implements `java.util.concurrent.Executor`) | You hold a `MinecraftServer` and just want the work to happen there. `isOnThread()` tells you whether you already are. |
+| queue it and drain it in the tick | a `ConcurrentLinkedQueue` the tick loop empties first thing | You want the same code to run in a unit test, where no `MinecraftServer` can be constructed. This is what `ReporterService` does. |
+
+⚠ **The bug this prevents is not subtle.** An `HttpClient` callback fires on the client's own
+executor, not the server thread. A plain `HashMap` written from both is not a race that shows up as
+a slightly stale read — a concurrent resize corrupts the map or spins a thread at 100%. If a field
+is touched from a tick, only a tick may write it.
+
+⚠ **Which half of a double chest holds the counts must be decided per read, from what is actually
+there — not once from the coordinates.** A fixed choice looks correct and fails two ways: break the
+chosen half and the pair reports missing while a perfectly readable chest stands next to it; and
+when the pair straddles a chunk border (roughly one in eight) the chosen half's chunk can unload
+while the other stays loaded, so the counts move to the sibling while the chosen half keeps its own
+copy — and the pair is counted twice.
 
 ### HUD (H11)
 
@@ -238,6 +262,83 @@ HudElementRegistry.attachElementAfter(
 - Respect `client.options.hudHidden` (F1), and hide while a `Screen` is open.
 
 Still the highest-churn area in the codebase (H1). **Spike it before building on it.**
+
+---
+
+## 10. Server commands, and the permission rewrite (H12)
+
+> Added 2026-09-08 while building `/seam` (MCO-534). Verified by `javap` against
+> `minecraft-merged-1.21.11-…-yarn.1.21.11+build.6` and by compiling — not from a tutorial.
+
+Registration is unchanged from the familiar shape, via `fabric-command-api-v2` (on the classpath
+already through the full `fabric-api` dependency):
+
+```kotlin
+CommandRegistrationCallback.EVENT.register { dispatcher, _, _ ->
+    dispatcher.register(
+        CommandManager.literal("seam")
+            .requires { CommandManager.OWNERS_CHECK.allows(it.permissions) }
+            .then(CommandManager.literal("status").executes { ... })
+            .then(
+                CommandManager.literal("connect")
+                    .then(CommandManager.argument("world_id", IntegerArgumentType.integer(1))
+                        .then(CommandManager.argument("token", StringArgumentType.string())
+                            .executes { ... })),
+            ),
+    )
+}
+```
+
+### ⚠ `hasPermissionLevel(int)` is gone
+
+**This is the trap, and it is not in any tutorial yet.** `ServerCommandSource.hasPermissionLevel(int)`
+— the thing every command example calls — **does not exist on 1.21.11**. It was replaced by a
+predicate system in `net.minecraft.command.permission`:
+
+| old | 1.21.11 |
+|---|---|
+| `source.hasPermissionLevel(4)` | `CommandManager.OWNERS_CHECK.allows(source.permissions)` |
+| `source.hasPermissionLevel(3)` | `CommandManager.ADMINS_CHECK.allows(source.permissions)` |
+| `source.hasPermissionLevel(2)` | `CommandManager.GAMEMASTERS_CHECK.allows(source.permissions)` |
+| `source.hasPermissionLevel(1)` | `CommandManager.MODERATORS_CHECK.allows(source.permissions)` |
+| *(no gate)* | `CommandManager.ALWAYS_PASS_CHECK` |
+
+The pieces, for when the ready-made constants are not enough:
+
+- `ServerCommandSource.getPermissions(): PermissionPredicate` (Kotlin: `source.permissions`) — what
+  the caller *has*. Also `withPermissions` / `withAdditionalPermissions` to derive a source.
+- `PermissionCheck.allows(PermissionPredicate): Boolean` — what a command *requires*.
+  `CommandManager` exposes the five constants above; they are `PermissionCheck`, not `Predicate`, so
+  they cannot be passed straight to `.requires { }` — ask them.
+- `PermissionLevel` is still an enum with the familiar rungs — `ALL, MODERATORS, GAMEMASTERS,
+  ADMINS, OWNERS` — plus `fromLevel(int)`, `getLevel()` and `isAtLeast(PermissionLevel)`, if a
+  numeric level has to be bridged.
+
+### Brigadier string arguments — a URL will not parse with `string()`
+
+Not a 1.21.11 change, but the same class of trap and it cost a real debugging round here.
+`StringArgumentType` has three modes, and the difference bites on anything URL-shaped:
+
+| type | reads |
+|---|---|
+| `word()` | one unquoted word: `[A-Za-z0-9_.+-]` only |
+| `string()` | a **quoted** string, or an unquoted word — same restricted alphabet |
+| `greedyString()` | the rest of the line, verbatim |
+
+So `/seam connect 3 tok http://localhost:8080` fails with **"Expected whitespace to end one
+argument, but found trailing data"**, pointing at the `:` — because `string()` fell back to word
+parsing and `:` and `/` are not word characters. Either quote the argument or, for a trailing one,
+use `greedyString()`. Found by running the command, not by reading it.
+
+### Command sources and secrets
+
+`ServerCommandSource.entity` is null when the command came from the server console. Worth checking
+before accepting anything secret: Minecraft logs commands players run, so a token typed in-game is
+in the server log afterwards. `/seam connect` allows it and says so rather than refusing, because
+the remedy (revoke and re-mint) is cheap and only obvious if someone points it out.
+
+Feedback is `source.sendFeedback({ Text.literal(...) }, broadcastToOps)` — the message is a
+**supplier**, evaluated only if it is actually going to be shown — and `source.sendError(Text)`.
 
 ---
 

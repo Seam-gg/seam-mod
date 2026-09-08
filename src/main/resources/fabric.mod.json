@@ -3,7 +3,7 @@
   "id": "seam_notebook",
   "version": "${version}",
   "name": "Seam Notebook",
-  "description": "In-game companion for the Seam webapp — resource tracking, container tagging, and task check-off. Client-only (v1).",
+  "description": "In-game companion for the Seam webapp — resource tracking, container tagging, and task check-off. The client half is the notebook; the optional server half reads tagged containers and reports what is in them.",
   "authors": ["Even Gultvedt"],
   "contact": {
     "homepage": "https://app.seam.gg",
@@ -11,8 +11,14 @@
     "issues": "https://github.com/Seam-gg/seam-mod/issues"
   },
   "license": "MIT",
-  "environment": "client",
+  "environment": "*",
   "entrypoints": {
+    "main": [
+      {
+        "adapter": "kotlin",
+        "value": "gg.seam.mod.SeamServer"
+      }
+    ],
     "client": [
       {
         "adapter": "kotlin",

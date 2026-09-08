@@ -3,8 +3,8 @@
 **Fabric** Minecraft mod (**Seam Notebook**), part of the Seam workspace. Bridges in-game
 resource tracking with the Seam webapp (`mc-org`, at `app.seam.gg`).
 
-Client-only in shipped jars today; **a server half lands in the same jar** — see § Client and
-server.
+**One jar, two halves** — the notebook on the client, and an optional reporter on the server. See
+§ Client and server.
 
 ## Hard facts
 
@@ -13,13 +13,14 @@ server.
   **`seam-notebook`**. Not plain `seam` — an unrelated horror mod already owns that Modrinth slug,
   and a shared mod id is a hard load failure for anyone running both. The Linear *project* is still
   called "Seam Companion Mod"; that's internal, like `mc-org` itself.
-- **Client-only today, client + server next.** Shipped jars are `environment: "client"` with a single
-  `client` entrypoint (`gg.seam.mod.SeamClient`). **MCO-534** flips `environment` to `"*"` and adds a
-  `main` entrypoint (`gg.seam.mod.SeamServer`) — **one jar, two halves**, released as `0.3.0` (a minor:
-  the Modrinth metadata changes from client-only to client *and* server).
-  *(This said a server component was v2 and would be prototyped "**as a script** … not a second mod
-  artifact" until 2026-09-08. "Not a second artifact" survives — the script does not. The Shared
-  Storage project needs the server half in the shipped jar, so a server operator installs one thing.)*
+- **Client + server, one jar.** `environment: "*"`, with a `client` entrypoint
+  (`gg.seam.mod.SeamClient`) and a `main` entrypoint (`gg.seam.mod.SeamServer`). Shipped as `0.3.0` —
+  a minor rather than a patch, because the Modrinth metadata changed from client-only to client *and*
+  server.
+  *(Was client-only until 2026-09-08, and before that said a server component was v2 and would be
+  prototyped "**as a script** … not a second mod artifact". "Not a second artifact" survives — the
+  script does not: Shared Storage needs the server half in the shipped jar, so a server operator
+  installs one thing.)*
 - **Build:** Loom 1.17 + Gradle 9.5, runs on **JDK 21+** (Gradle ≥9.1 supports Java 25, so the local
   JDK 25 is fine). The mod still *targets* Java 21 (MC 1.21.11's runtime) via `jvmToolchain(21)` —
   that's independent of the JDK running Gradle. Verified coordinates in `gradle.properties`;
@@ -37,8 +38,7 @@ snapshot / Mojmap model that does not match 1.21.11 Yarn.
 
 ## Client and server — one jar, two halves
 
-Settled by **MCO-534**; the sweep it carries is **MCO-260**. Not built yet — this is the shape to
-build to, not a description of the tree.
+Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the push).
 
 - **Packaging.** `environment: "*"`, a `main` entrypoint `gg.seam.mod.SeamServer`, `client` entrypoint
   untouched. The mod registers **no blocks, items or packets**, so a client without it can join a
@@ -46,11 +46,24 @@ build to, not a description of the tree.
   halves never speak to each other — they meet in mc-org.**
 - **`gg.seam.mod.storage` must not reference `MinecraftClient`.** Anywhere. It depends only on
   `net.minecraft.server.*` and the existing API client. A stray client reference will not class-load on
-  a dedicated server — the one mistake here that fails loudly and late, so it is enforced by the
-  dedicated-server load test rather than by eye.
+  a dedicated server — the one mistake here that fails loudly and late, and it fails on somebody
+  else's machine long after the jar shipped. `ServerHalfIsClientFreeTest` scans the compiled classes'
+  constant pool for `net/minecraft/client`, so it is caught at build time rather than by eye. That
+  test also asserts the *client* half still trips the same check, so it cannot quietly stop proving
+  anything.
 - **Singleplayer runs the same code.** `main` also fires in singleplayer's integrated server, which is
   what makes SP and MP one code path instead of two implementations. Exercise the server half in SP
-  against a local webapp before the jar goes near a real server.
+  against a local webapp before the jar goes near a real server — **`docs/testing-the-reporter.md`**
+  is the walkthrough, including the bit that is not built yet: there is no in-game tagging gesture
+  until MCO-261 (Phase C), so tags come from `scripts/seam-tag.sh`.
+- **One sweep pass per `sweep_seconds`, and the push happens when the pass ends.** Not a read every
+  tick — that burns ticks producing readings nobody sends — and not a push on its own timer, which
+  would carry a mix of readings minutes apart. A changed tag list starts a pass immediately, so a
+  chest tagged just now is measured now rather than one interval from now.
+- **Only the server thread may write the reporter's state.** HTTP callbacks fire on the client's
+  own executor and hand work back through a queue the tick drains. This is not a style rule: a
+  `HashMap` written from two threads does not go slightly stale, it corrupts or spins. See
+  `docs/fabric-1.21.11-reference.md` §9.
 - **Config is `config/seam-notebook-server.json`**, read once at server start (`api_base_url`,
   `seam_world_id`, `token`, `sweep_seconds`, `reads_per_tick`). Absent or tokenless → **one INFO line
   and do nothing.** A server that installs the jar without configuring it is a supported state, not an
@@ -101,8 +114,16 @@ Point the mod at a local webapp with `-Dseam.apiBaseUrl=http://localhost:8080` (
 ## Tests
 
 `./gradlew test` — JUnit 5 over the Minecraft-free half (wire models, `SeamApiClient` against a
-loopback `com.sun.net.httpserver`, the device-code poll policy). Anything touching `MinecraftClient`
-can't be unit-tested here; that's `runClient` territory.
+loopback `com.sun.net.httpserver`, the device-code poll policy, the reporter config, the container
+grouping, the reporter loop driven against a loopback webapp, and the client-free scan of the
+server half's compiled classes). Anything touching `MinecraftClient` or a live world can't be
+unit-tested here; that's `runClient` / `runServer` territory.
+
+`ReporterAgainstRealWebappTest` is the exception and is **skipped unless pointed at a running
+mc-org** (`SEAM_SMOKE_BASE_URL`, `SEAM_SMOKE_TOKEN`, `SEAM_SMOKE_WORLD_ID`). It drives the real
+reporter against the real API with the block reads faked, which is the only thing that catches a
+contract drift between this repo and `ApiDtos.kt` — a loopback server built from these same wire
+models cannot.
 
 ## Versioning & release
 

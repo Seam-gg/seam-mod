@@ -300,11 +300,11 @@ class ApiModelsTest {
         )
 
         assertTrue(encoded.contains(""""world_id":3"""))
-        // An empty push is the heartbeat; there is no separate endpoint for it. This codec omits
-        // defaults, so the empty list is simply absent from the wire — and the webapp's own model
-        // defaults `containers` to empty, so an omitted list and an explicit `[]` mean the same
-        // thing. What must survive is the round trip.
-        assertTrue(!encoded.contains("containers"), "an empty list is omitted, not sent: $encoded")
+        // An empty push is the heartbeat; there is no separate endpoint for it, and it must reach
+        // the wire as an explicit `[]`. This codec omits fields at their default, so `containers`
+        // deliberately has none — otherwise a heartbeat would arrive with no `containers` key at
+        // all, indistinguishable in an mc-org log from a malformed body.
+        assertTrue(encoded.contains(""""containers":[]"""), "the heartbeat lost its list: $encoded")
         val roundTripped = json.decodeFromString(ReporterContentsRequest.serializer(), encoded)
         assertEquals(3, roundTripped.worldId)
         assertTrue(roundTripped.containers.isEmpty())

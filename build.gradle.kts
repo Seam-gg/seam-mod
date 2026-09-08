@@ -81,6 +81,22 @@ loom {
                 environmentVariable("ALSOFT_DRIVERS", "pulse")
             }
         }
+
+        // The dev server points at the local webapp too. `/seam connect <world> <token>` takes an
+        // optional URL and otherwise falls back to this — without it a dev server would default to
+        // production and report a scratch world's chests into the real thing.
+        //
+        // `runServer` is also the better way to exercise the reporter than `runClient`: it is the
+        // real dedicated-server path rather than singleplayer's integrated one, `/seam connect`
+        // belongs in a console anyway (Minecraft logs commands players type), and you join it with
+        // an ordinary Minecraft client — the mod registers no blocks, items or packets, so a
+        // vanilla client can connect to a server running it.
+        named("server") {
+            property(
+                "seam.apiBaseUrl",
+                project.findProperty("seamApiBaseUrl")?.toString() ?: "http://localhost:8080",
+            )
+        }
     }
 }
 
