@@ -160,7 +160,15 @@ class ReporterService(
         // Without this the very first sweep is a whole `sweep_seconds` after boot — the tag list
         // arrives *after* the boot pass has already run against an empty one — so someone who has
         // just tagged a chest watches an empty world settings page and concludes it does not work.
-        if (pulled != tags) passStartedAt = null
+        val changed = pulled != tags
+        if (changed) {
+            passStartedAt = null
+            // The one log line that answers "did it see the chest I just tagged?". It fires only
+            // when the list actually changes, so a steady base is silent — but a reporter that
+            // says nothing at all is indistinguishable from a broken one, and that is exactly how
+            // it feels from the far side of a webapp you are also still testing.
+            log.info("Now sweeping {} tagged container(s) for world {}", pulled.size, config.seamWorldId)
+        }
 
         tags = pulled
         interest = pulledInterest
@@ -261,6 +269,13 @@ class ReporterService(
                     result is ApiResult.Ok -> {
                         // Only a confirmed write advances the baseline. A failed push leaves it
                         // alone, so the next one re-sends rather than dropping a change.
+                        // "The webapp is accepting what we send" is worth saying exactly once —
+                        // at the first accepted push, and again after recovering from a failure.
+                        if (lastPushAt == null) {
+                            log.info("Seam reporter: the webapp accepted its first push. Connection is working.")
+                        } else if (lastError != null) {
+                            log.info("Seam reporter: pushing again after an error.")
+                        }
                         lastPushed.putAll(changed)
                         lastPushAt = instant
                         lastPushContainers = changed.size
