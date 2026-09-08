@@ -136,38 +136,41 @@ object ContainerTagStore {
      * do not have.
      */
     fun untag(target: ContainerTarget): CompletableFuture<Unit> {
-        val synced = assignmentFor(target) as? Assignment.Synced
         val idByPosition = tags.filter { row -> row.dimension == target.dimension }
             .associateBy { pendingKey(target.dimension, TagPos(it.x, it.y, it.z)) }
+        var anythingToSend = false
 
         WorldDataStore.update { data ->
             var next = data
             for (pos in target.positions) {
                 val key = pendingKey(target.dimension, pos)
                 val containerId = idByPosition[key]?.id
-                next = if (containerId == null && next.pendingContainerTag(key) != null) {
-                    // Queued but never created: cancelling the create *is* the untag.
-                    next.withoutPendingContainerTag(key)
-                } else if (containerId != null) {
-                    next.withPendingContainerTag(
-                        PendingContainerTag(
-                            dimension = target.dimension,
-                            x = pos.x, y = pos.y, z = pos.z,
-                            kind = target.kind,
-                            groupKey = target.groupKey,
-                            projectId = null,
-                            containerId = containerId,
-                        ),
-                    )
-                } else {
-                    next
+                when {
+                    // Seam has a row for this position, so there is something to delete.
+                    containerId != null -> {
+                        anythingToSend = true
+                        next = next.withPendingContainerTag(
+                            PendingContainerTag(
+                                dimension = target.dimension,
+                                x = pos.x, y = pos.y, z = pos.z,
+                                kind = target.kind,
+                                groupKey = target.groupKey,
+                                projectId = null,
+                                containerId = containerId,
+                            ),
+                        )
+                    }
+                    // Queued but never created: cancelling the create *is* the untag, and there is
+                    // no id to send a DELETE for.
+                    next.pendingContainerTag(key) != null -> next = next.withoutPendingContainerTag(key)
                 }
             }
             next
         }
-        if (synced == null && WorldDataStore.current.pendingContainerTags.isEmpty()) {
-            return CompletableFuture.completedFuture(Unit)
-        }
+
+        // Untagging something Seam never had is purely local. Flushing anyway would push every
+        // other queued write as a side effect of a button that, here, changed nothing remote.
+        if (!anythingToSend) return CompletableFuture.completedFuture(Unit)
         return push()
     }
 
