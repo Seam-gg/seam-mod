@@ -8,7 +8,7 @@ import gg.seam.mod.api.SeamApiClient
 import net.minecraft.server.MinecraftServer
 import org.slf4j.Logger
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * The reporter loop (MCO-260 / MCO-535).
@@ -18,16 +18,21 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * The shape, and why:
  *
- * - **Reading happens on the server thread**, a few containers per tick, because world access is not
- *   thread-safe and a sweep must never become a tick spike. The work is proportional to the number
- *   of tagged containers (tens, maybe hundreds) and reading an inventory is a few array reads, so
- *   this is nothing like a terrain sweep.
- * - **The HTTP happens off it.** Readings are snapshotted into plain data first; the network call
- *   never runs while holding the tick.
- * - **The push carries only what changed.** The reporter keeps a hash per container in memory, and
- *   names only containers whose contents differ from the last successful push. It is otherwise
- *   stateless — a restart simply re-pushes everything once, which is why there is no resync
- *   protocol and no persistence here.
+ * - **One pass per `sweep_seconds`.** A pass reads every tagged group exactly once, a few per tick,
+ *   and the push happens when the pass ends. Reading continuously between pushes would burn ticks
+ *   producing readings nobody sends; tying the push to the end of a pass also means a push carries
+ *   one coherent look at the base rather than a mix of readings minutes apart.
+ * - **Reading happens on the server thread**, because world access is not thread-safe and a sweep
+ *   must never become a tick spike. The work is proportional to the number of tagged containers
+ *   (tens, maybe hundreds) and reading an inventory is a few array reads.
+ * - **The HTTP happens off it, and its results come back through [inbox].** Every field below is
+ *   owned by the server thread and touched from nowhere else. An HTTP callback fires on the
+ *   client's own executor, so it may not write them directly — it queues a change that the next
+ *   tick applies. Before this, two threads shared plain `HashMap`s, which is not a subtle race:
+ *   a concurrent resize corrupts the map or spins.
+ * - **The push carries only what changed** against the last *confirmed* push, so a failure re-sends
+ *   rather than silently dropping a change. It is otherwise stateless — a restart re-pushes
+ *   everything once, which is why there is no resync protocol and nothing persisted here.
  */
 class ReporterService(
     private val config: ReporterConfig,
@@ -35,134 +40,205 @@ class ReporterService(
     private val log: Logger,
     private val now: () -> Instant = Instant::now,
 ) {
-    /** Tags as last pulled, and what each project cares about. Replaced wholesale on each re-pull. */
+    /** What `/seam status` shows. Read on the server thread, where commands also run. */
+    data class Status(
+        val taggedContainers: Int,
+        val groups: Int,
+        val lastPassEndedAt: Instant?,
+        val lastPushAt: Instant?,
+        val lastPushContainers: Int,
+        val lastError: String?,
+        val projectsWithoutItemsOfInterest: List<Int>,
+    )
+
+    // ── Server-thread state. Nothing here may be written from an HTTP callback. ─────────
+
     private var tags: List<TaggedContainer> = emptyList()
     private var interest: Map<Int, Set<String>> = emptyMap()
 
-    /** One canonical container per physical inventory — see [ContainerSweep.canonicalByGroup]. */
-    private var canonical: Set<Long> = emptySet()
+    /** Tags split into physical inventories — see [ContainerSweep.groupsOf]. A pass walks these. */
+    private var groups: List<List<TaggedContainer>> = emptyList()
 
-    /** Round-robin cursor over [tags], so every container is reached without re-reading any early. */
-    private var cursor = 0
+    /** How far into [groups] the current pass has got. */
+    private var groupCursor = 0
+    private var passActive = false
+    private var passStartedAt: Instant? = null
+    private var pushDue = false
 
-    /** Contents as of the last successful push, per container, for the diff. */
-    private val lastPushed = mutableMapOf<Long, Map<String, Long>>()
-
-    /** Readings accumulated since the last push. */
+    /** The latest reading per container, and the latest **confirmed** one. Their difference is the push. */
     private val pending = mutableMapOf<Long, ContainerSweep.Reading>()
+    private val lastPushed = mutableMapOf<Long, ContainerSweep.Reading>()
 
     private var lastTagPull: Instant? = null
-    private var lastPush: Instant? = null
-    private val pullInFlight = AtomicBoolean(false)
-    private val pushInFlight = AtomicBoolean(false)
+    private var lastPassEndedAt: Instant? = null
+    private var lastPushAt: Instant? = null
+    private var lastPushContainers = 0
+    private var lastError: String? = null
+    private var pullInFlight = false
+    private var pushInFlight = false
+    private var projectsWithoutInterest: List<Int> = emptyList()
+
+    /** Work handed back from HTTP callback threads, applied on the server thread at the tick's top. */
+    private val inbox = ConcurrentLinkedQueue<Runnable>()
+
+    /** How one group of tags is read. The seam that lets the loop be tested without a world. */
+    fun interface GroupReader {
+        fun read(group: List<TaggedContainer>, itemsOfInterest: Set<String>): Map<Long, ContainerSweep.Reading>
+    }
 
     /** Called every server tick, on the server thread. */
-    fun tick(server: MinecraftServer) {
-        val instant = now()
+    fun tick(server: MinecraftServer) =
+        tick { group, wanted -> ContainerSweep.readGroup(server, group, wanted) }
 
-        if (shouldPullTags(instant)) pullTags()
-        if (tags.isNotEmpty()) sweepSome(server)
-        if (shouldPush(instant)) push(instant)
+    /**
+     * The loop itself, with world access injected.
+     *
+     * A `MinecraftServer` cannot be constructed in a unit test, and the scheduling — one pass per
+     * interval, the diff against the last *confirmed* push, the retry after a failure — is where
+     * the bugs live, not in the block reads. So the reads come in through [GroupReader] and
+     * `ReporterServiceTest` drives this against a loopback webapp.
+     */
+    internal fun tick(read: GroupReader) {
+        while (true) (inbox.poll() ?: break).run()
+
+        val instant = now()
+        if (shouldPullTags(instant)) pullTags(instant)
+        if (!passActive && shouldStartPass(instant)) startPass(instant)
+        if (passActive) advancePass(read)
+        if (pushDue && !pushInFlight) push(now())
     }
+
+    fun status(): Status = Status(
+        taggedContainers = tags.size,
+        groups = groups.size,
+        lastPassEndedAt = lastPassEndedAt,
+        lastPushAt = lastPushAt,
+        lastPushContainers = lastPushContainers,
+        lastError = lastError,
+        projectsWithoutItemsOfInterest = projectsWithoutInterest,
+    )
 
     // ── Tags ───────────────────────────────────────────────────────────────────
 
     private fun shouldPullTags(instant: Instant): Boolean {
-        if (pullInFlight.get()) return false
+        if (pullInFlight) return false
         val last = lastTagPull ?: return true
         return last.plusSeconds(TAG_PULL_SECONDS).isBefore(instant)
     }
 
-    private fun pullTags() {
-        if (!pullInFlight.compareAndSet(false, true)) return
-        lastTagPull = now()
+    private fun pullTags(instant: Instant) {
+        pullInFlight = true
+        lastTagPull = instant
         api.getReporterTags(config.seamWorldId).whenComplete { result, thrown ->
-            try {
+            inbox += Runnable {
+                pullInFlight = false
                 when {
-                    thrown != null -> log.warn("Could not pull container tags: {}", thrown.javaClass.simpleName)
-                    result is ApiResult.Ok -> applyTags(result.value.containers.map {
-                        TaggedContainer(
-                            id = it.id,
-                            projectId = it.projectId,
-                            dimension = it.dimension,
-                            x = it.x, y = it.y, z = it.z,
-                            groupKey = it.groupKey,
-                        )
-                    }, result.value.itemsOfInterest.associate { it.projectId to it.itemIds.toSet() })
+                    thrown != null -> fail("Could not pull container tags", thrown.javaClass.simpleName)
+                    result is ApiResult.Ok -> applyTags(
+                        result.value.containers.map {
+                            TaggedContainer(
+                                id = it.id,
+                                projectId = it.projectId,
+                                dimension = it.dimension,
+                                x = it.x, y = it.y, z = it.z,
+                                groupKey = it.groupKey,
+                            )
+                        },
+                        result.value.itemsOfInterest.associate { it.projectId to it.itemIds.toSet() },
+                    )
                     result is ApiResult.Error ->
-                        log.warn("Could not pull container tags: {} {}", result.status, result.code)
-                    else -> log.warn("Could not pull container tags")
+                        fail("Could not pull container tags", "${result.status} ${result.code}")
+                    else -> fail("Could not pull container tags", "unknown")
                 }
-            } finally {
-                pullInFlight.set(false)
             }
         }
     }
 
-    /**
-     * Replaces the tag list. Writes plain fields only, so the server thread reading them next tick
-     * sees either the old list or the new one — never a half-built one.
-     */
-    @Synchronized
+    /** Applied on the server thread, from [inbox]. */
     private fun applyTags(pulled: List<TaggedContainer>, pulledInterest: Map<Int, Set<String>>) {
+        // A changed tag list starts a pass on the next tick rather than waiting out the interval.
+        // Without this the very first sweep is a whole `sweep_seconds` after boot — the tag list
+        // arrives *after* the boot pass has already run against an empty one — so someone who has
+        // just tagged a chest watches an empty world settings page and concludes it does not work.
+        if (pulled != tags) passStartedAt = null
+
         tags = pulled
         interest = pulledInterest
-        canonical = ContainerSweep.canonicalByGroup(pulled).values.map { it.id }.toSet()
-        if (cursor >= pulled.size) cursor = 0
-        // A tag that has gone away should stop occupying the diff cache; otherwise a re-created tag
-        // with the same id (there is no such thing, but a restart of the webapp is not our business)
-        // could be skipped as "unchanged".
+        groups = ContainerSweep.groupsOf(pulled)
+        if (groupCursor > groups.size) groupCursor = groups.size
+
+        // A tag that has gone away must stop occupying the diff, or a later tag reusing its id
+        // would be skipped as "unchanged".
         val live = pulled.map { it.id }.toSet()
         lastPushed.keys.retainAll(live)
         pending.keys.retainAll(live)
+
+        // A tagged project with nothing to measure reports nothing, by design — but from the
+        // outside that is indistinguishable from a broken sweep, so it is worth one line. Only
+        // when the set changes: this runs every minute.
+        val silent = pulled.map { it.projectId }.distinct().filter { interest[it].isNullOrEmpty() }.sorted()
+        if (silent != projectsWithoutInterest) {
+            projectsWithoutInterest = silent
+            if (silent.isNotEmpty()) {
+                log.info(
+                    "Tagged containers belong to project(s) {} which have no target or plan items — " +
+                        "nothing to measure there until something is added to the project.",
+                    silent.joinToString(", "),
+                )
+            }
+        }
     }
 
     // ── The sweep ──────────────────────────────────────────────────────────────
 
-    /**
-     * Reads up to `reads_per_tick` containers, continuing where the last tick stopped.
-     *
-     * With 100 tagged containers and the default 8 reads per tick, a full cycle of the cursor takes
-     * about 13 ticks — well inside one sweep interval, and invisible in tick time.
-     */
-    private fun sweepSome(server: MinecraftServer) {
-        val budget = minOf(config.readsPerTick, tags.size)
-        repeat(budget) {
-            val tag = tags[cursor % tags.size]
-            cursor = (cursor + 1) % tags.size
+    private fun shouldStartPass(instant: Instant): Boolean {
+        val last = passStartedAt ?: return true
+        return last.plusSeconds(config.sweepSeconds.toLong()).isBefore(instant)
+    }
 
-            // Exactly one tag per physical inventory is read. The others are still reported — as
-            // seen and empty — so they do not sit in world settings looking unreadable while
-            // contributing nothing.
-            val reading = if (tag.id in canonical) {
-                ContainerSweep.read(server, tag, interest[tag.projectId].orEmpty())
-            } else {
-                ContainerSweep.Reading(tag.id, ContainerSweep.STATE_OK, emptyMap())
-            }
-            if (reading != null) pending[tag.id] = reading
+    private fun startPass(instant: Instant) {
+        passStartedAt = instant
+        groupCursor = 0
+        passActive = true
+    }
+
+    /**
+     * Reads up to `reads_per_tick` containers of the current pass, continuing where the last tick
+     * stopped, and ends the pass once every group has been visited.
+     *
+     * With 100 tagged containers and the default 8 reads per tick a pass takes about 13 ticks —
+     * under a second, and invisible in tick time. Then nothing until the next interval.
+     */
+    private fun advancePass(read: GroupReader) {
+        var budget = config.readsPerTick
+        while (budget > 0 && groupCursor < groups.size) {
+            val group = groups[groupCursor++]
+            // The union of the members' interests: a group is one inventory, and whichever member
+            // ends up holding the counts, every member's project should get what it asked for.
+            val wanted = group.flatMapTo(mutableSetOf()) { interest[it.projectId].orEmpty() }
+            read.read(group, wanted).forEach { (id, reading) -> pending[id] = reading }
+            budget -= group.size
+        }
+        if (groupCursor >= groups.size) {
+            passActive = false
+            lastPassEndedAt = now()
+            pushDue = true
         }
     }
 
     // ── The push ───────────────────────────────────────────────────────────────
 
-    private fun shouldPush(instant: Instant): Boolean {
-        if (pushInFlight.get()) return false
-        val last = lastPush ?: return tags.isNotEmpty() || pending.isNotEmpty()
-        return last.plusSeconds(config.sweepSeconds.toLong()).isBefore(instant)
-    }
-
     /**
-     * Pushes what changed. An empty payload still goes — that is the heartbeat, and the only thing
-     * that tells world settings a server is alive but has nothing to say.
+     * Pushes what changed since the last confirmed push. An empty payload still goes — that is the
+     * heartbeat, and the only thing that tells world settings a server is alive but has nothing to
+     * say. The first one leaves at boot, so a bad token is a log line within a tick rather than a
+     * sweep interval later.
      */
     private fun push(instant: Instant) {
-        if (!pushInFlight.compareAndSet(false, true)) return
-        lastPush = instant
+        pushInFlight = true
+        pushDue = false
 
-        val changed = pending.filter { (id, reading) ->
-            // A state change is always worth reporting; so is any difference in the counts.
-            lastPushed[id] != reading.counts || reading.state != ContainerSweep.STATE_OK
-        }
+        val changed = pending.filterTo(mutableMapOf()) { (id, reading) -> lastPushed[id] != reading }
         val body = ReporterContentsRequest(
             worldId = config.seamWorldId,
             sweptAt = instant.toString(),
@@ -176,40 +252,48 @@ class ReporterService(
                 )
             },
         )
-        val snapshot = changed.mapValues { it.value.counts }
 
         api.pushReporterContents(body).whenComplete { result, thrown ->
-            try {
+            inbox += Runnable {
+                pushInFlight = false
                 when {
-                    thrown != null ->
-                        log.warn("Could not push container contents: {}", thrown.javaClass.simpleName)
+                    thrown != null -> fail("Could not push container contents", thrown.javaClass.simpleName)
                     result is ApiResult.Ok -> {
-                        // Only a confirmed write advances the diff baseline. A failed push leaves it
-                        // alone, so the next one re-sends rather than silently dropping a change.
-                        lastPushed.putAll(snapshot)
-                        pending.clear()
+                        // Only a confirmed write advances the baseline. A failed push leaves it
+                        // alone, so the next one re-sends rather than dropping a change.
+                        lastPushed.putAll(changed)
+                        lastPushAt = instant
+                        lastPushContainers = changed.size
+                        lastError = null
                         if (result.value.rejected > 0) {
-                            log.warn(
-                                "The webapp rejected {} container(s) — not this world's; check seam_world_id",
-                                result.value.rejected,
+                            fail(
+                                "The webapp rejected ${result.value.rejected} container(s)",
+                                "not this world's — check seam_world_id",
                             )
                         }
                     }
                     result is ApiResult.Error ->
-                        log.warn("Could not push container contents: {} {}", result.status, result.code)
-                    else -> log.warn("Could not push container contents")
+                        fail("Could not push container contents", "${result.status} ${result.code}")
+                    else -> fail("Could not push container contents", "unknown")
                 }
-            } finally {
-                pushInFlight.set(false)
             }
         }
+    }
+
+    /** One place for "it did not work", so `/seam status` can show the same thing the log said. */
+    private fun fail(what: String, detail: String) {
+        lastError = "$what: $detail"
+        log.warn("{}: {}", what, detail)
     }
 
     companion object {
         /** How often the tag list and items_of_interest are re-pulled. */
         const val TAG_PULL_SECONDS = 60L
 
-        /** Reported to the webapp so world settings can say which build is talking. */
+        /**
+         * Reported to the webapp so world settings can say which build is talking. Pinned to
+         * `gradle.properties`' `modVersion` by `ReporterServiceTest`, so it cannot drift.
+         */
         const val REPORTER_VERSION = "0.3.0+1.21.11"
     }
 }

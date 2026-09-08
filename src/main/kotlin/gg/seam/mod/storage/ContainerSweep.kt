@@ -33,36 +33,95 @@ object ContainerSweep {
     const val STATE_MISSING = "missing"
 
     /**
-     * Reads one tagged position **on the server thread** — world access is not thread-safe, so the
-     * caller must already be there.
+     * Reads one **group** — the set of tags naming a single physical inventory — **on the server
+     * thread**, because world access is not thread-safe.
      *
-     * Returns null when the container's chunk is not loaded. That is not a failure and not a gap:
-     * a container in an unloaded chunk **cannot have changed**, because nobody was there to change
-     * it, so its last reading is still correct and the right move is to report nothing rather than
-     * to overwrite it. This is the observation the whole design rests on.
+     * Returns a reading per member it can speak for, and simply omits the rest. An omitted
+     * container keeps whatever the webapp already holds for it, which is the design's load-bearing
+     * idea: a container in an unloaded chunk **cannot have changed**, because nobody was there to
+     * change it, so its last reading is still correct and overwriting it would be the bug.
+     *
+     * Why a group and not a position: a joined double chest is two tag rows sharing a `group_key`,
+     * and `ChestBlock.getInventory(..., true)` returns the **combined** inventory from *either*
+     * half — so reading both would double every count. One member holds the counts; the others are
+     * reported as seen and empty.
+     *
+     * Which member holds them is decided **per pass, from what is actually there**, not once from
+     * the coordinates. If it were fixed, breaking the lower half would report the pair as missing
+     * while a perfectly readable chest stood next to it; and when the holder's chunk unloaded while
+     * its sibling's stayed loaded — a double chest straddling a chunk border, roughly one pair in
+     * eight — the counts would move to the sibling while the holder kept its own copy, and the
+     * webapp would count the pair twice. Hence: the first member that is genuinely readable holds
+     * the counts, and every other member of a group with a holder is zeroed in the same push.
+     *
+     * A group means "one inventory", which is what the webapp's `group_key` promises and what the
+     * tagging gesture writes. Grouping two unrelated barrels by hand would report one and zero the
+     * other; the webapp's adjacency check on `group_key` is what bounds that.
      *
      * [interest] bounds what is reported. Without it the push would carry an inventory of somebody's
      * junk drawer and the webapp would quietly become a whole-world item census.
      */
-    fun read(server: MinecraftServer, tag: TaggedContainer, interest: Set<String>): Reading? {
-        val world = server.getWorld(tag.dimensionKey()) ?: return Reading(tag.id, STATE_MISSING, emptyMap())
-        val pos = BlockPos(tag.x, tag.y, tag.z)
+    fun readGroup(
+        server: MinecraftServer,
+        members: List<TaggedContainer>,
+        interest: Set<String>,
+    ): Map<Long, Reading> {
+        if (members.isEmpty()) return emptyMap()
 
-        if (!world.isChunkLoaded(ChunkPos.toLong(pos))) return null
+        val world = server.getWorld(members.first().dimensionKey())
+            ?: return members.associate { it.id to Reading(it.id, STATE_MISSING, emptyMap()) }
 
-        val inventory = inventoryAt(world, pos)
-            ?: return Reading(tag.id, STATE_MISSING, emptyMap())
+        // Look at every member once. `getBlockState` on an unloaded chunk would load it
+        // synchronously, so the chunk check is not an optimisation — it is the thing that keeps a
+        // sweep from dragging terrain in off a tag nobody has visited.
+        var holder: TaggedContainer? = null
+        var holderInventory: Inventory? = null
+        val gone = mutableListOf<TaggedContainer>()
+        val unloaded = mutableListOf<TaggedContainer>()
 
-        return Reading(tag.id, STATE_OK, count(inventory, interest))
+        for (member in members) {
+            val pos = BlockPos(member.x, member.y, member.z)
+            if (!world.isChunkLoaded(ChunkPos.toLong(pos))) {
+                unloaded += member
+                continue
+            }
+            val inventory = inventoryAt(world, pos)
+            when {
+                inventory == null -> gone += member
+                holder == null -> {
+                    holder = member
+                    holderInventory = inventory
+                }
+            }
+        }
+
+        // Nothing readable: say only what was actually looked at. With every member in an unloaded
+        // chunk that is nothing at all, which is the correct amount to say.
+        if (holder == null) {
+            return gone.associate { it.id to Reading(it.id, STATE_MISSING, emptyMap()) }
+        }
+
+        val readings = mutableMapOf<Long, Reading>()
+        readings[holder.id] = Reading(holder.id, STATE_OK, count(holderInventory!!, interest))
+        for (member in members) {
+            if (member.id == holder.id) continue
+            readings[member.id] = when (member) {
+                // A member whose block is gone is missing; every other member of a group that has a
+                // holder contributes nothing *by construction*, unloaded chunk or not — the holder
+                // is carrying the whole inventory. Saying so explicitly is what stops the pair being
+                // counted twice when the holder changes between passes.
+                in gone -> Reading(member.id, STATE_MISSING, emptyMap())
+                else -> Reading(member.id, STATE_OK, emptyMap())
+            }
+        }
+        return readings
     }
 
     /**
      * The inventory at a position, or null when the block is gone or is not a container.
      *
      * For a chest this asks for the **combined** inventory, which is what
-     * `ChestBlock.getInventory(..., true)` returns from *either* half of a joined pair — so reading
-     * both halves would double-count everything. The caller dedupes by group before getting here;
-     * this function's job is only to return the whole inventory a player would see on opening it.
+     * `ChestBlock.getInventory(..., true)` returns from *either* half of a joined pair.
      */
     private fun inventoryAt(world: ServerWorld, pos: BlockPos): Inventory? {
         val state = world.getBlockState(pos)
@@ -78,6 +137,12 @@ object ContainerSweep {
     /**
      * Sums an inventory by item id, keeping only [interest].
      *
+     * **An empty [interest] reports nothing, not everything.** The failure modes are not
+     * symmetrical: a project with no items of interest reporting zero looks broken and is harmless,
+     * while the same case reporting everything would quietly ship the webapp a whole-world item
+     * census off one mis-shaped response. The reporter says the first out loud instead — see
+     * `ReporterService.applyTags`.
+     *
      * **Looks one level inside shulker boxes.** A stack carrying `DataComponentTypes.CONTAINER`
      * contributes its own contents too — without this, a base that stores in shulkers reports
      * near-zero and the whole feature reads as broken. One level is enough: vanilla shulkers cannot
@@ -92,7 +157,7 @@ object ContainerSweep {
 
         fun add(id: String, n: Int) {
             if (n <= 0) return
-            if (interest.isNotEmpty() && id !in interest) return
+            if (id !in interest) return
             counts[id] = (counts[id] ?: 0L) + n.toLong()
         }
 
@@ -111,20 +176,19 @@ object ContainerSweep {
     private fun idOf(item: net.minecraft.item.Item): String = Registries.ITEM.getId(item).toString()
 
     /**
-     * One container per physical inventory.
+     * Splits tags into groups, one group per physical inventory.
      *
-     * A joined double chest is two tag rows sharing a `group_key`, deliberately: either half can
-     * render a label, and breaking one half does not orphan the tag. But `ChestBlock.getInventory`
-     * returns the *combined* inventory from either half, so reading both would count everything
-     * twice. Exactly one tag per group is read; the rest are reported as seen but empty, so they do
-     * not linger as "unreadable" in world settings while contributing nothing to the total.
+     * Members are ordered by `(x, z, id)` and the groups themselves by their key, so a pass visits
+     * the same containers in the same order every time — the sweep's cursor depends on that, and so
+     * does which member ends up holding the counts when several are readable.
      *
-     * The canonical half is the lowest `(x, z)` — an arbitrary but stable choice, so the same half
-     * is picked every sweep and the contents do not migrate between rows.
+     * A blank `group_key` falls back to the position, so an untagged-by-the-mod row cannot swallow
+     * unrelated containers into one group.
      */
-    fun canonicalByGroup(tags: List<TaggedContainer>): Map<String, TaggedContainer> =
+    fun groupsOf(tags: List<TaggedContainer>): List<List<TaggedContainer>> =
         tags.groupBy { it.groupKey.ifBlank { "${it.x},${it.y},${it.z}" } }
-            .mapValues { (_, group) -> group.minWith(compareBy({ it.x }, { it.z }, { it.id })) }
+            .toSortedMap()
+            .map { (_, group) -> group.sortedWith(compareBy({ it.x }, { it.z }, { it.id })) }
 }
 
 /**

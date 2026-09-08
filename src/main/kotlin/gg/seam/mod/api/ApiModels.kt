@@ -277,7 +277,11 @@ data class ReporterContentsRequest(
     @SerialName("world_id") val worldId: Int? = null,
     @SerialName("swept_at") val sweptAt: String? = null,
     @SerialName("reporter_version") val reporterVersion: String? = null,
-    @SerialName("containers") val containers: List<ReportedContainerDto> = emptyList(),
+    // No default, deliberately. `SeamJson` omits fields sitting at their default, so a default of
+    // `emptyList()` would drop the key entirely from a heartbeat — and a body with no `containers`
+    // reads, in an mc-org log, exactly like a malformed one. An empty list says "nothing changed"
+    // out loud.
+    @SerialName("containers") val containers: List<ReportedContainerDto>,
 )
 
 @Serializable

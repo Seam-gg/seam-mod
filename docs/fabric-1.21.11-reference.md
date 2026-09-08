@@ -202,7 +202,7 @@ So the constraint is unchanged and the mitigation is inverted: **do not** reach 
 
 ## 9. Server side: containers & the HUD
 
-> **Forward-looking (2026-09-06).** None of this is built yet — it is the verified API surface for the *Shared Storage* project (MCO-534, MCO-260, MCO-537). Recorded here rather than in an issue because these are facts about 1.21.11, and they will outlive the issues.
+> **Built 2026-09-08** (MCO-534, MCO-260, MCO-535) and exercised against a real mc-org; the HUD half (MCO-537) is still forward-looking. Recorded here rather than in an issue because these are facts about 1.21.11 and they outlive the issues.
 
 Everything here was checked against `minecraft-merged-1.21.11-…-yarn.1.21.11+build.6` and the Fabric API jars in this project's dependency graph — **not** against the docs site (H10).
 
@@ -218,9 +218,31 @@ Everything here was checked against `minecraft-merged-1.21.11-…-yarn.1.21.11+b
 |---|---|---|
 | chunk guard | `ServerWorld.isChunkLoaded(long)` + `ChunkPos.toLong(BlockPos)` | An unloaded container **cannot have changed** — keep its last reading rather than re-reading it. |
 | the inventory | `world.getBlockEntity(pos) as? Inventory` | Must run **on the server thread** — world access is not thread-safe. |
-| double chests | `ChestBlock.getInventory(ChestBlock, BlockState, World, BlockPos, boolean)` | Returns the **combined** `DoubleInventory` from *either* half — so reading both halves double-counts. Dedupe to one canonical position. |
+| double chests | `ChestBlock.getInventory(ChestBlock, BlockState, World, BlockPos, boolean)` | Returns the **combined** `DoubleInventory` from *either* half — so reading both halves double-counts. Read one and report the other as empty; see the warning below about picking it. |
 | shulker contents | `stack.get(DataComponentTypes.CONTAINER)` → `ContainerComponent.streamNonEmpty()` | One level deep; vanilla shulkers do not nest. Without this a shulker-based base reports near-zero. |
 | the tick hook | `ServerTickEvents.END_SERVER_TICK` | Also `START_SERVER_TICK`, `START_WORLD_TICK`, `END_WORLD_TICK`. |
+
+### Getting off the server thread and back on again
+
+The sweep reads on the server thread and does its HTTP off it, so results have to come back. Both
+routes are real; they are not equivalent.
+
+| route | API | when |
+|---|---|---|
+| hand a task to the server thread | `MinecraftServer.execute(Runnable)` (inherited from `ThreadExecutor`, which implements `java.util.concurrent.Executor`) | You hold a `MinecraftServer` and just want the work to happen there. `isOnThread()` tells you whether you already are. |
+| queue it and drain it in the tick | a `ConcurrentLinkedQueue` the tick loop empties first thing | You want the same code to run in a unit test, where no `MinecraftServer` can be constructed. This is what `ReporterService` does. |
+
+⚠ **The bug this prevents is not subtle.** An `HttpClient` callback fires on the client's own
+executor, not the server thread. A plain `HashMap` written from both is not a race that shows up as
+a slightly stale read — a concurrent resize corrupts the map or spins a thread at 100%. If a field
+is touched from a tick, only a tick may write it.
+
+⚠ **Which half of a double chest holds the counts must be decided per read, from what is actually
+there — not once from the coordinates.** A fixed choice looks correct and fails two ways: break the
+chosen half and the pair reports missing while a perfectly readable chest stands next to it; and
+when the pair straddles a chunk border (roughly one in eight) the chosen half's chunk can unload
+while the other stays loaded, so the counts move to the sibling while the chosen half keeps its own
+copy — and the pair is counted twice.
 
 ### HUD (H11)
 

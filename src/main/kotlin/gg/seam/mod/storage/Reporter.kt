@@ -21,6 +21,14 @@ object Reporter {
     val isRunning: Boolean get() = service != null
     val config: ReporterConfig? get() = current
 
+    /**
+     * What the reporter has actually managed to do, for `/seam status`. Null while it is off.
+     *
+     * Read on the server thread — which is where commands run — because that is the only thread
+     * allowed to touch [ReporterService]'s state.
+     */
+    fun status(): ReporterService.Status? = service?.status()
+
     /** Starts (or restarts) the reporter for [config]. Returns false when the config cannot report. */
     @Synchronized
     fun start(config: ReporterConfig, log: Logger): Boolean {

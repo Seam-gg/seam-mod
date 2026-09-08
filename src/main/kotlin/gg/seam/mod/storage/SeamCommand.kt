@@ -84,10 +84,56 @@ object SeamCommand {
             { Text.literal("  Sweeping: every ${config.sweepSeconds}s, ${config.readsPerTick} containers per tick") },
             false,
         )
+
+        // "on" is not the same as "working", and the gap between them is the whole reason anyone
+        // types this command. Say what it has actually done.
+        val status = Reporter.status()
+        if (status == null) {
+            ctx.source.sendFeedback({ Text.literal("  It has not ticked yet.") }, false)
+            return 1
+        }
         ctx.source.sendFeedback(
-            { Text.literal("  The webapp's world settings page shows the last sweep it received.") },
+            { Text.literal("  Tagged:   ${status.taggedContainers} container(s) in ${status.groups} inventory group(s)") },
             false,
         )
+        ctx.source.sendFeedback(
+            {
+                Text.literal(
+                    "  Swept:    " + (status.lastPassEndedAt?.let { "last finished $it" } ?: "no pass finished yet"),
+                )
+            },
+            false,
+        )
+        ctx.source.sendFeedback(
+            {
+                Text.literal(
+                    "  Pushed:   " + (
+                        status.lastPushAt?.let { "$it (${status.lastPushContainers} container(s) changed)" }
+                            ?: "nothing accepted yet"
+                        ),
+                )
+            },
+            false,
+        )
+        if (status.taggedContainers == 0) {
+            ctx.source.sendFeedback(
+                { Text.literal("  No containers are tagged yet, so there is nothing to measure.") },
+                false,
+            )
+        }
+        if (status.projectsWithoutItemsOfInterest.isNotEmpty()) {
+            ctx.source.sendFeedback(
+                {
+                    Text.literal(
+                        "  Project(s) ${status.projectsWithoutItemsOfInterest.joinToString(", ")} have no target " +
+                            "or plan items, so their tagged containers report nothing.",
+                    )
+                },
+                false,
+            )
+        }
+        val error = status.lastError
+        if (error != null) ctx.source.sendError(Text.literal("  Last problem: $error"))
         return 1
     }
 

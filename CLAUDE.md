@@ -53,7 +53,17 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
   anything.
 - **Singleplayer runs the same code.** `main` also fires in singleplayer's integrated server, which is
   what makes SP and MP one code path instead of two implementations. Exercise the server half in SP
-  against a local webapp before the jar goes near a real server.
+  against a local webapp before the jar goes near a real server — **`docs/testing-the-reporter.md`**
+  is the walkthrough, including the bit that is not built yet: there is no in-game tagging gesture
+  until MCO-261 (Phase C), so tags come from `scripts/seam-tag.sh`.
+- **One sweep pass per `sweep_seconds`, and the push happens when the pass ends.** Not a read every
+  tick — that burns ticks producing readings nobody sends — and not a push on its own timer, which
+  would carry a mix of readings minutes apart. A changed tag list starts a pass immediately, so a
+  chest tagged just now is measured now rather than one interval from now.
+- **Only the server thread may write the reporter's state.** HTTP callbacks fire on the client's
+  own executor and hand work back through a queue the tick drains. This is not a style rule: a
+  `HashMap` written from two threads does not go slightly stale, it corrupts or spins. See
+  `docs/fabric-1.21.11-reference.md` §9.
 - **Config is `config/seam-notebook-server.json`**, read once at server start (`api_base_url`,
   `seam_world_id`, `token`, `sweep_seconds`, `reads_per_tick`). Absent or tokenless → **one INFO line
   and do nothing.** A server that installs the jar without configuring it is a supported state, not an
@@ -104,10 +114,16 @@ Point the mod at a local webapp with `-Dseam.apiBaseUrl=http://localhost:8080` (
 ## Tests
 
 `./gradlew test` — JUnit 5 over the Minecraft-free half (wire models, `SeamApiClient` against a
-loopback `com.sun.net.httpserver`, the device-code poll policy, the reporter config, the
-double-chest dedupe, and the client-free scan of the server half's compiled classes). Anything
-touching `MinecraftClient` or a live world can't be unit-tested here; that's `runClient` /
-`runServer` territory.
+loopback `com.sun.net.httpserver`, the device-code poll policy, the reporter config, the container
+grouping, the reporter loop driven against a loopback webapp, and the client-free scan of the
+server half's compiled classes). Anything touching `MinecraftClient` or a live world can't be
+unit-tested here; that's `runClient` / `runServer` territory.
+
+`ReporterAgainstRealWebappTest` is the exception and is **skipped unless pointed at a running
+mc-org** (`SEAM_SMOKE_BASE_URL`, `SEAM_SMOKE_TOKEN`, `SEAM_SMOKE_WORLD_ID`). It drives the real
+reporter against the real API with the block reads faked, which is the only thing that catches a
+contract drift between this repo and `ApiDtos.kt` — a loopback server built from these same wire
+models cannot.
 
 ## Versioning & release
 
