@@ -180,6 +180,36 @@ data class ContainerTagsResponse(
     @SerialName("containers") val containers: List<ContainerTagDto> = emptyList(),
 )
 
+// ── Gathering plan (MCO-533) ───────────────────────────────────────────────────
+
+/**
+ * One node of a project's gathering plan, from `GET /projects/{id}/plan` — the HUD's **graph
+ * items** mode, as opposed to the **target** items on [ProjectDto].
+ *
+ * The difference is the whole point of the second mode: a project asks for 64 hoppers, and the plan
+ * says go mine iron and chop wood. TARGET answers "what does the build need"; GRAPH answers "what
+ * am I doing this afternoon".
+ *
+ * [quantity] is a `Long` and must stay one — plan quantities expand far past `Int` on a large
+ * project, and the HUD formats them with thousands separators.
+ *
+ * [activityGroup] is one of `NEEDS_ATTENTION`, `COLLECT_SUPPLIED`, `GATHER`, `HUNT`, `LOOT`,
+ * `TRADE`, `SMELT`, `CRAFT`, `OTHER`; [status] is one of `RESOLVED`, `RAW_GATHER`, `SUPPLIED`,
+ * `OPEN_TAG`, `BLOCKED`. A plan full of `NEEDS_ATTENTION` is a normal answer — the webapp returns
+ * 200 with those nodes marked, and the HUD should render them rather than treat it as an error.
+ *
+ * The plan is **expensive to derive**, so it belongs on the structure cadence (project switch and
+ * every ~5 minutes), never on the count poll. See `SeamSettings.storagePollSeconds` for the other.
+ */
+@Serializable
+data class PlanActivityDto(
+    @SerialName("item_id") val itemId: String,
+    @SerialName("name") val name: String = "",
+    @SerialName("quantity") val quantity: Long = 0,
+    @SerialName("activity_group") val activityGroup: String = "OTHER",
+    @SerialName("status") val status: String = "RESOLVED",
+)
+
 // ── The reporter: tags in, contents out (MCO-532) ──────────────────────────────
 
 /**
