@@ -61,6 +61,7 @@ class SeamSyncTest {
                 var next = data
                 r.syncedProjects.forEach { next = next.withProjectReset(it) }
                 r.syncedTasks.forEach { next = next.withoutPendingTask(it.projectId, it.taskId) }
+                r.syncedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
                 committed = next
             },
             now = { 42L },
@@ -161,5 +162,116 @@ class SeamSyncTest {
         val (_, _) = flush(WorldData(seamWorldId = 1).withCount(5, "minecraft:stone", 1))
 
         assertEquals(SyncState.Synced(42L), SeamSync.state)
+    }
+
+    // ── Container tags (MCO-261) ───────────────────────────────────────────────
+
+    private fun queuedTag(x: Int, projectId: Int? = 7, containerId: Long? = null) = PendingContainerTag(
+        dimension = "minecraft:overworld",
+        x = x, y = 64, z = 20,
+        kind = "chest",
+        groupKey = "$x,64,20",
+        projectId = projectId,
+        containerId = containerId,
+    )
+
+    @Test
+    fun `a queued tag is posted and then dropped from the queue`() {
+        responseBody = """{"id":1,"project_id":7,"dimension":"minecraft:overworld","x":10,"y":64,"z":20}"""
+        val data = WorldData(seamWorldId = 3).withPendingContainerTag(queuedTag(10))
+
+        val (result, committed) = flush(data)
+
+        assertNull(result.failure)
+        val (request, body) = requests.single()
+        assertEquals("POST /api/v1/worlds/3/containers", request)
+        assertTrue(body.contains(""""group_key":"10,64,20""""), "got: $body")
+        assertTrue(body.contains(""""kind":"chest""""), "got: $body")
+        assertEquals(0, committed!!.queuedWrites)
+    }
+
+    @Test
+    fun `both halves of a queued double chest go out with the same group key`() {
+        responseBody = """{"id":1,"project_id":7,"dimension":"minecraft:overworld","x":10,"y":64,"z":20}"""
+        val data = WorldData(seamWorldId = 3)
+            .withPendingContainerTag(queuedTag(10).copy(groupKey = "10,64,20"))
+            .withPendingContainerTag(queuedTag(11).copy(groupKey = "10,64,20"))
+
+        val (result, committed) = flush(data)
+
+        assertNull(result.failure)
+        assertEquals(2, requests.size)
+        // Losing the shared key between queueing and flushing would split the pair into two groups,
+        // and the sweep would read the joined chest twice.
+        assertTrue(requests.all { it.second.contains(""""group_key":"10,64,20"""") }, "got: $requests")
+        assertEquals(0, committed!!.queuedWrites)
+    }
+
+    @Test
+    fun `a queued untag deletes the row it names`() {
+        responseBody = """{"ok":true}"""
+        val data = WorldData(seamWorldId = 3)
+            .withPendingContainerTag(queuedTag(10, projectId = null, containerId = 99))
+
+        val (result, committed) = flush(data)
+
+        assertNull(result.failure)
+        assertEquals("DELETE /api/v1/worlds/3/containers/99", requests.single().first)
+        assertEquals(0, committed!!.queuedWrites)
+    }
+
+    @Test
+    fun `an untag for a row that never existed sends nothing and clears itself`() {
+        // Tag offline, change your mind offline. There is no server row to delete, and a DELETE
+        // would need an id nobody ever had.
+        val data = WorldData(seamWorldId = 3)
+            .withPendingContainerTag(queuedTag(10, projectId = null, containerId = null))
+
+        val (result, committed) = flush(data)
+
+        assertNull(result.failure)
+        assertTrue(requests.isEmpty(), "sent: $requests")
+        assertEquals(0, committed!!.queuedWrites)
+    }
+
+    @Test
+    fun `a container deleted in the web app is dropped rather than retried forever`() {
+        responseStatus = 404
+        responseBody = """{"error":"not_found"}"""
+        val data = WorldData(seamWorldId = 3)
+            .withPendingContainerTag(queuedTag(10, projectId = null, containerId = 99))
+
+        val (result, committed) = flush(data)
+
+        // A 404 means the intent is already satisfied. Retrying it would wedge every later write in
+        // the queue behind a request that can never succeed.
+        assertNull(result.failure)
+        assertEquals(0, committed!!.queuedWrites)
+    }
+
+    @Test
+    fun `a failed tag stays queued`() {
+        responseStatus = 500
+        responseBody = """{"error":"server_error"}"""
+        val data = WorldData(seamWorldId = 3).withPendingContainerTag(queuedTag(10))
+
+        val (result, committed) = flush(data)
+
+        assertIs<String>(result.failure)
+        assertTrue(result.syncedContainerTags.isEmpty())
+        assertEquals(1, (committed ?: data).queuedWrites, "the tag was lost instead of retried")
+    }
+
+    @Test
+    fun `a queued tag with no world binding is dropped, not sent somewhere wrong`() {
+        // The binding is gone, so the project id in this intent addresses a project in a world we
+        // are no longer talking about. Sending it would tag a stranger's chest.
+        val data = WorldData(seamWorldId = null).withPendingContainerTag(queuedTag(10))
+
+        val (result, committed) = flush(data)
+
+        assertNull(result.failure)
+        assertTrue(requests.isEmpty(), "sent: $requests")
+        assertEquals(0, committed!!.queuedWrites)
     }
 }

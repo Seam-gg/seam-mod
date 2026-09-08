@@ -7,6 +7,7 @@ import gg.seam.mod.api.SeamApiClient
 import gg.seam.mod.api.describe
 import gg.seam.mod.data.PendingContainerTag
 import gg.seam.mod.data.SeamSync
+import gg.seam.mod.data.WorldData
 import gg.seam.mod.data.WorldDataStore
 import java.util.concurrent.CompletableFuture
 
@@ -84,14 +85,17 @@ object ContainerTagStore {
      * than anything the last pull could know, and the picker must show what the player just did
      * rather than what the server last said.
      */
-    fun assignmentFor(target: ContainerTarget): Assignment? {
+    fun assignmentFor(
+        target: ContainerTarget,
+        data: WorldData = WorldDataStore.current,
+        knownTags: List<ContainerTagDto> = tags,
+    ): Assignment? {
         val keys = target.positions.map { pendingKey(target.dimension, it) }
-        val data = WorldDataStore.current
         keys.firstNotNullOfOrNull { data.pendingContainerTag(it) }?.let {
             return Assignment.Queued(it.projectId)
         }
 
-        val rows = tags.filter { row ->
+        val rows = knownTags.filter { row ->
             row.dimension == target.dimension && target.positions.any { it.x == row.x && it.y == row.y && it.z == row.z }
         }
         val projectId = rows.firstOrNull()?.projectId ?: return null
