@@ -61,27 +61,46 @@ records who did it. That is why step 2 signs in as you and this step does not.
 
 ## 4. Connect the server
 
-Singleplayer works: `main` is the entrypoint, and it runs in the integrated server too, so the
-code path is identical to a dedicated server's.
+**Use `runServer` and join it with your ordinary Minecraft client.** Not `runClient` — for the
+reporter it is worse in every way that matters:
+
+- It is the **real dedicated-server path**, not singleplayer's integrated one.
+- `/seam connect` belongs in a console. Minecraft logs commands players type, so a token typed in
+  chat lands in the server log; `/seam` says so when you do it, and the fix is to revoke and
+  re-mint.
+- **Your client needs no mod.** The mod registers no blocks, items or packets and the two halves
+  never speak to each other, so a vanilla 1.21.11 client connects to a server running it.
+- It sidesteps the dev client entirely — including WSL2's raw-mouse problem (README § WSL2
+  dev-client performance).
 
 ```bash
-./gradlew runClient   # or runServer
+./gradlew runServer          # localhost:25565, console on stdin
 ```
 
-⚠ **In singleplayer, create the world with cheats allowed.** `/seam` is owners-only, and a
-singleplayer host without cheats has permission level 0 — the command will not even appear, which
-looks exactly like the mod failing to load. `runServer`'s console is always level 4, so it needs
-nothing.
-
-Then, in the server console (or in-game as an operator):
+Then, in that console:
 
 ```
-/seam connect 1 <token> http://localhost:8080
+/seam connect 1 <token>
 ```
 
-The URL is optional and defaults to `https://app.seam.gg`. Run it **in the console** where you can:
-Minecraft logs commands players type, so a token typed in chat ends up in the log. `/seam` says so
-when you do it, and the fix is to revoke and re-mint.
+`runServer` and `runClient` both set `-Dseam.apiBaseUrl=http://localhost:8080`, so the URL argument
+is only needed to point somewhere else (`-PseamApiBaseUrl=…` changes the default). A **shipped**
+jar with no override defaults to `https://app.seam.gg`.
+
+`run/server.properties` is `online-mode=true`, so join with your real account. To run `/seam`
+in-game rather than in the console, `op <your-name>` first — but prefer the console, for the reason
+above.
+
+<details>
+<summary>Singleplayer instead</summary>
+
+`main` also runs in singleplayer's integrated server, so the code path is the same. **Create the
+world with cheats allowed**: `/seam` is owners-only and a singleplayer host without cheats is
+permission level 0, so the command does not appear at all — indistinguishable from the mod failing
+to load. On WSL2 also turn Raw Input off (Options → Controls → Mouse Settings), or the camera whips
+around no matter where the sensitivity slider is.
+
+</details>
 
 ## 5. Watch it work
 

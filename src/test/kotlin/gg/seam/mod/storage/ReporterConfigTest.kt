@@ -68,7 +68,7 @@ class ReporterConfigTest {
         assertEquals(3, config.seamWorldId)
         // Unset fields fall back to their defaults rather than failing the parse.
         assertEquals(ReporterConfig.DEFAULT_SWEEP_SECONDS, config.sweepSeconds)
-        assertEquals(ReporterConfig.DEFAULT_BASE_URL, config.apiBaseUrl)
+        assertEquals(ReporterConfig.defaultBaseUrl(), config.apiBaseUrl)
     }
 
     @Test

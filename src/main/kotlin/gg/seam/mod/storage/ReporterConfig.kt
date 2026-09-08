@@ -22,7 +22,7 @@ import java.nio.file.attribute.PosixFilePermission
  */
 @Serializable
 data class ReporterConfig(
-    @SerialName("api_base_url") val apiBaseUrl: String = DEFAULT_BASE_URL,
+    @SerialName("api_base_url") val apiBaseUrl: String = defaultBaseUrl(),
     @SerialName("seam_world_id") val seamWorldId: Int = 0,
     @SerialName("token") val token: String = "",
     @SerialName("sweep_seconds") val sweepSeconds: Int = DEFAULT_SWEEP_SECONDS,
@@ -47,8 +47,15 @@ data class ReporterConfig(
 
     companion object {
         const val FILE_NAME = "seam-notebook-server.json"
-        const val DEFAULT_BASE_URL = "https://app.seam.gg"
+        const val PRODUCTION_BASE_URL = "https://app.seam.gg"
         const val DEFAULT_SWEEP_SECONDS = 30
+
+        // Duplicated from `SeamApi` rather than shared, deliberately: that object reaches
+        // `SeamClient` and `ConfigStore`, and nothing in this package may pull a client class onto
+        // a dedicated server. Two string literals is the cheap side of that trade — but they are
+        // the same two, and they mean the same thing. Change both together.
+        private const val BASE_URL_PROPERTY = "seam.apiBaseUrl"
+        private const val BASE_URL_ENV = "SEAM_API_BASE_URL"
         const val DEFAULT_READS_PER_TICK = 8
 
         private const val MIN_SWEEP_SECONDS = 5
@@ -73,6 +80,21 @@ data class ReporterConfig(
             secret.isEmpty() -> "<redacted:empty>"
             else -> "<redacted:${secret.length}>"
         }
+
+        /**
+         * Where a reporter points when nothing has said otherwise.
+         *
+         * Honours `-Dseam.apiBaseUrl` and `SEAM_API_BASE_URL`, the same overrides the client half
+         * documents — otherwise `/seam connect <world> <token>` on a **dev server** would default
+         * to production and start reporting a test world's chests into the real webapp. The
+         * resolved value is what `/seam connect` writes to the config file, so there is exactly one
+         * URL in play and `/seam status` shows the one requests actually use.
+         */
+        fun defaultBaseUrl(): String =
+            listOf(System.getProperty(BASE_URL_PROPERTY), System.getenv(BASE_URL_ENV))
+                .firstOrNull { !it.isNullOrBlank() }
+                ?.trimEnd('/')
+                ?: PRODUCTION_BASE_URL
 
         fun path(): Path = FabricLoader.getInstance().configDir.resolve(FILE_NAME)
 

@@ -142,7 +142,7 @@ object SeamCommand {
         val token = StringArgumentType.getString(ctx, "token")
 
         val config = ReporterConfig(
-            apiBaseUrl = baseUrl?.trimEnd('/') ?: Reporter.config?.apiBaseUrl ?: ReporterConfig.DEFAULT_BASE_URL,
+            apiBaseUrl = baseUrl?.trimEnd('/') ?: Reporter.config?.apiBaseUrl ?: ReporterConfig.defaultBaseUrl(),
             seamWorldId = worldId,
             token = token,
         ).sanitised()
