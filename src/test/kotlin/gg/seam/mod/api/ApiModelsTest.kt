@@ -113,4 +113,92 @@ class ApiModelsTest {
             json.encodeToString(TaskUpdateRequest.serializer(), TaskUpdateRequest(completed = true)),
         )
     }
+
+    // ── Container tags (MCO-530) ───────────────────────────────────────────────
+
+    @Test
+    fun `a container tag decodes the snake_case wire format`() {
+        val decoded = json.decodeFromString(
+            ContainerTagsResponse.serializer(),
+            """
+            {
+              "containers": [
+                {
+                  "id": 42,
+                  "project_id": 7,
+                  "dimension": "minecraft:overworld",
+                  "x": 10, "y": 64, "z": -20,
+                  "group_key": "10,64,-20",
+                  "kind": "barrel",
+                  "tagged_by": "Even",
+                  "tagged_at": "2026-09-08T07:30:00Z",
+                  "last_seen_at": "2026-09-08T07:31:00Z",
+                  "state": "ok"
+                }
+              ]
+            }
+            """.trimIndent(),
+        )
+
+        val tag = decoded.containers.single()
+        assertEquals(42L, tag.id)
+        assertEquals(7, tag.projectId)
+        assertEquals("minecraft:overworld", tag.dimension)
+        assertEquals(-20, tag.z)
+        assertEquals("10,64,-20", tag.groupKey)
+        assertEquals("barrel", tag.kind)
+        assertEquals("Even", tag.taggedBy)
+        assertEquals("ok", tag.state)
+    }
+
+    @Test
+    fun `a tag nothing has swept yet decodes as unreadable with no last_seen_at`() {
+        val tag = json.decodeFromString(
+            ContainerTagDto.serializer(),
+            """
+            {"id":1,"project_id":2,"dimension":"minecraft:overworld","x":0,"y":0,"z":0,
+             "group_key":"0,0,0","kind":"chest","tagged_by":null,
+             "tagged_at":"2026-09-08T07:30:00Z","last_seen_at":null,"state":"unreadable"}
+            """.trimIndent(),
+        )
+
+        // Both fields belong to the server half; until it has read the position the honest answer
+        // is "nothing has looked at this yet", not a count of zero.
+        assertEquals("unreadable", tag.state)
+        assertNull(tag.lastSeenAt)
+        assertNull(tag.taggedBy)
+    }
+
+    @Test
+    fun `tagging a single container omits group_key so the server defaults it to the position`() {
+        val encoded = json.encodeToString(
+            ContainerTagRequest.serializer(),
+            ContainerTagRequest(
+                dimension = "minecraft:overworld",
+                x = 5, y = 70, z = -8,
+                projectId = 3,
+                kind = "chest",
+            ),
+        )
+
+        assertEquals(
+            """{"dimension":"minecraft:overworld","x":5,"y":70,"z":-8,"project_id":3,"kind":"chest"}""",
+            encoded,
+        )
+    }
+
+    @Test
+    fun `both halves of a double chest are tagged with one explicit group key`() {
+        val lower = json.encodeToString(
+            ContainerTagRequest.serializer(),
+            ContainerTagRequest("minecraft:overworld", 4, 64, 4, 3, "chest", groupKey = "4,64,4"),
+        )
+        val upper = json.encodeToString(
+            ContainerTagRequest.serializer(),
+            ContainerTagRequest("minecraft:overworld", 5, 64, 4, 3, "chest", groupKey = "4,64,4"),
+        )
+
+        assertTrue(lower.contains(""""group_key":"4,64,4""""))
+        assertTrue(upper.contains(""""group_key":"4,64,4""""))
+    }
 }
