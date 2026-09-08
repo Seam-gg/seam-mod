@@ -19,3 +19,6 @@ run/
 # OS / logs
 *.log
 .DS_Store
+
+# Dev-server logs — runServer writes these at the repo root, unlike run/ (MCO-534).
+logs/
