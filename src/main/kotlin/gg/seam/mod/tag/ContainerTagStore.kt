@@ -1,5 +1,6 @@
 package gg.seam.mod.tag
 
+import gg.seam.mod.SeamClient
 import gg.seam.mod.api.ApiResult
 import gg.seam.mod.api.ContainerTagDto
 import gg.seam.mod.api.SeamApi
@@ -110,6 +111,16 @@ object ContainerTagStore {
      * land (MCO-264) the assignment is visible without opening anything at all.
      */
     fun tag(target: ContainerTarget, projectId: Int): CompletableFuture<Unit> {
+        // The server half says when it picks a tag up; the client should say when it made one.
+        // Without this the whole gesture is silent in the log, and "did that work?" can only be
+        // answered by opening the picker again or querying the database.
+        val where = target.positions.first()
+        SeamClient.logger.info(
+            "Tagging {}{} at {},{},{} for project {}",
+            target.kind,
+            if (target.isPair) " (both halves)" else "",
+            where.x, where.y, where.z, projectId,
+        )
         WorldDataStore.update { data ->
             var next = data
             for (pos in target.positions) {
@@ -136,6 +147,8 @@ object ContainerTagStore {
      * do not have.
      */
     fun untag(target: ContainerTarget): CompletableFuture<Unit> {
+        val where = target.positions.first()
+        SeamClient.logger.info("Untagging {} at {},{},{}", target.kind, where.x, where.y, where.z)
         val idByPosition = tags.filter { row -> row.dimension == target.dimension }
             .associateBy { pendingKey(target.dimension, TagPos(it.x, it.y, it.z)) }
         var anythingToSend = false

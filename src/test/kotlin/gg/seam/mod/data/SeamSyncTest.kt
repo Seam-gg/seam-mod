@@ -62,6 +62,7 @@ class SeamSyncTest {
                 r.syncedProjects.forEach { next = next.withProjectReset(it) }
                 r.syncedTasks.forEach { next = next.withoutPendingTask(it.projectId, it.taskId) }
                 r.syncedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
+                r.rejectedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
                 committed = next
             },
             now = { 42L },
@@ -247,6 +248,39 @@ class SeamSyncTest {
         // the queue behind a request that can never succeed.
         assertNull(result.failure)
         assertEquals(0, committed!!.queuedWrites)
+    }
+
+    @Test
+    fun `a tag the server will never accept is dropped, not retried forever`() {
+        responseStatus = 400
+        responseBody = """{"error":"invalid_request","message":"Not a taggable container kind"}"""
+        val data = WorldData(seamWorldId = 3)
+            .withPendingContainerTag(queuedTag(10))
+            .withPendingContainerTag(queuedTag(11))
+
+        val (result, committed) = flush(data)
+
+        // A 400 is the server saying the request is wrong, and it will be just as wrong next time.
+        // Keeping it queued wedges the whole queue behind it forever — including resource counts
+        // and task toggles, since the chain stops at the first failure.
+        assertNull(result.failure)
+        assertEquals(2, result.rejectedContainerTags.size)
+        assertEquals(0, committed!!.queuedWrites)
+    }
+
+    @Test
+    fun `an expired token keeps the tag queued, because re-linking fixes it`() {
+        responseStatus = 401
+        responseBody = """{"error":"unauthorized"}"""
+        val data = WorldData(seamWorldId = 3).withPendingContainerTag(queuedTag(10))
+
+        val (result, committed) = flush(data)
+
+        // Dropping someone's tags because their token expired would be the wrong answer to a
+        // problem they can fix in Settings — after which the queue flushes on its own.
+        assertIs<String>(result.failure)
+        assertTrue(result.rejectedContainerTags.isEmpty())
+        assertEquals(1, (committed ?: data).queuedWrites)
     }
 
     @Test
