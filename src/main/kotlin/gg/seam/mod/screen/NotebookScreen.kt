@@ -162,21 +162,24 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
                 .dimensions(contentR - CLOSE_W - 4 - UNDO_W, footerTop + 2, UNDO_W, BTN).build(),
         )
 
-        // ---- pinned section headers ----
-        // Full-width buttons rather than drawn text: a clickable heading that does not look
-        // clickable is a heading nobody clicks, and every other control on this screen is a button.
-        var sy = statusY + LINE + 4
+        // ---- section switcher ----
+        // One row of three, not three stacked full-width buttons. Stacked, they read as three big
+        // buttons rather than as a heading each, and they cost 150px of a 340px panel — which is
+        // the body, the thing they exist to make room for.
+        val tabY = statusY + LINE + 4
+        val tabW = (contentR - contentX - TAB_GAP * (Section.entries.size - 1)) / Section.entries.size
         sectionButtons.clear()
-        for (section in Section.entries) {
+        Section.entries.forEachIndexed { i, section ->
             sectionButtons[section] = addDrawableChild(
                 ButtonWidget.builder(Text.literal(sectionLabel(section))) { openSection(section) }
-                    .dimensions(contentX, sy, contentR - contentX, SECTION_BTN).build(),
+                    .dimensions(contentX + i * (tabW + TAB_GAP), tabY, tabW, SECTION_BTN).build(),
             )
-            sy += SECTION_BTN + 1
         }
 
         // ---- scrollable body ----
-        bodyTop = sy + 3
+        // The reporter warning is pinned under the tabs, but only when there is one — see
+        // [drawReporterWarning].
+        bodyTop = tabY + SECTION_BTN + 4 + LINE
         bodyBottom = footerTop - 2
 
         buildResourceButtons()
@@ -189,34 +192,42 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         buildResourceButtons()
     }
 
-    /** `v RESOURCES  12 / 557` — the marker says open, the counts say whether it is worth opening. */
+    /**
+     * `Resources 0/557` — a name and a count, because a third of the panel holds nothing more.
+     *
+     * The count is what makes the tab a decision rather than a guess: you can see there is nothing
+     * under TASKS without opening it.
+     */
     private fun sectionLabel(section: Section): String {
-        val marker = if (section == expanded) "v" else ">"
         val current = project
-        val detail = when (section) {
+        return when (section) {
             Section.RESOURCES -> {
                 val done = current?.resources?.count { displayedCount(current.id, it) >= it.required } ?: 0
-                "$done / ${current?.resources?.size ?: 0}"
+                "Resources ${done}/${current?.resources?.size ?: 0}"
             }
             Section.TASKS -> {
                 val done = current?.tasks?.count { completedOf(current.id, it) } ?: 0
-                "$done / ${current?.tasks?.size ?: 0}"
+                "Tasks ${done}/${current?.tasks?.size ?: 0}"
             }
-            // The reporter's state rides on this header rather than taking a pinned line of its
-            // own. It is the answer worth having *while* you work, and a header is already pinned.
-            Section.CONTAINERS -> "${containers.size} tagged  ${reporterSummary()}"
+            Section.CONTAINERS -> "Containers ${containers.size}"
         }
-        return "$marker ${section.name}  $detail"
     }
 
-    /** The shortest true thing about the reporter, for the pinned header. */
-    private fun reporterSummary(): String {
-        val status = ContainerTagStore.reporter
-        return when {
-            status == null -> ""
-            !status.configured || !status.connected -> "- NOT READ"
-            else -> "- read ${status.lastSeenAt.shortTime()}"
-        }
+    /**
+     * The one line that must survive whichever tab is open: nobody is reading these containers.
+     *
+     * Only drawn when that is true. A healthy reporter says so inside CONTAINERS, where someone who
+     * went looking will find it; a broken one has to interrupt, because the whole failure is that
+     * you tag chests and nothing happens and there is no other symptom.
+     */
+    private fun drawReporterWarning(context: DrawContext, y: Int) {
+        val status = ContainerTagStore.reporter ?: return
+        if (status.connected) return
+        context.drawText(
+            textRenderer,
+            trim("No server is reading your tagged containers - counts will not update."),
+            contentX, y, SeamPalette.RED, false,
+        )
     }
 
     /**
@@ -364,6 +375,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
             button.message = Text.literal(textRenderer.trimToWidth(sectionLabel(section), button.width - 8))
             button.render(context, mouseX, mouseY, delta)
         }
+        drawReporterWarning(context, bodyTop - LINE - 1)
 
         // scrollable body
         context.enableScissor(left + 1, bodyTop, left + panelW - 1, bodyBottom)
@@ -463,7 +475,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
                 tagged.forEachIndexed { i, container ->
                     drawContainer(context, container, cy)
                     untagButtons.getOrNull(i)?.let { button ->
-                        button.y = cy - 3
+                        button.y = cy - 4
                         button.active = cy >= bodyTop && cy + CONTAINER_BTN <= bodyBottom
                         button.render(context, mouseX, mouseY, delta)
                     }
@@ -474,29 +486,32 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
     }
 
     /**
-     * The answer to "is anything actually reading these?" — the question the whole section exists
-     * for (MCO-536).
+     * Inside CONTAINERS: what to *do* about the reporter, not that there is a problem.
      *
-     * Its three states have three different fixes, so they get three different sentences. The
-     * no-reporter case says plainly that counts will not update **and** that tagging still works,
-     * because otherwise the reasonable response is to stop tagging — when in fact the tags are
-     * picked up the moment a reporter arrives.
+     * The alarm is already pinned above the tabs by [drawReporterWarning] and repeating it here
+     * would waste the one line that could say something useful. So this carries the fix instead,
+     * and the two states have different ones — a world with no token needs someone in world
+     * settings, a token nobody has used needs someone at a server console.
+     *
+     * The reassurance matters as much as the diagnosis. Told only that nothing is reading these,
+     * the sensible response is to stop tagging — when in fact every tag is picked up the moment a
+     * reporter connects.
      */
     private fun drawReporterLine(context: DrawContext, y: Int): Int {
         val status = ContainerTagStore.reporter
         val (text, colour) = when {
             status == null -> "Checking whether a server is reading these..." to SeamPalette.MUTED
             !status.configured ->
-                "No server is reading these containers - counts will not update." to SeamPalette.RED
+                "No reporter token for this world - mint one in Seam world settings." to SeamPalette.RED
             !status.connected ->
-                "${status.serverName ?: "A server"} is set up but has never connected." to SeamPalette.RED
+                "${status.serverName ?: "A server"} has never connected - run /seam connect on it." to
+                    SeamPalette.RED
             else ->
                 "Read by ${status.serverName ?: "a server"}, last seen ${status.lastSeenAt.shortTime()}." to
                     SeamPalette.GREEN
         }
         context.drawText(textRenderer, trim(text), contentX, y, colour, false)
 
-        // Said only where someone might otherwise conclude that tagging is pointless.
         if (status != null && !status.connected) {
             context.drawText(
                 textRenderer,
@@ -508,27 +523,32 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         return y + LINE + 4
     }
 
-    /** One tagged container: where it is, and whether the sweep can actually read it. */
+    /**
+     * One tagged container on one line: where it is, what it is, and whether the sweep can read it.
+     *
+     * Two lines apiece was a third of the panel spent on three chests. The state is right-aligned
+     * against the Untag button so the eye can run down it — `missing` and `unreadable` make a count
+     * *wrong* rather than merely stale, and someone scanning should find those without reading
+     * every row, which is also why they are coloured rather than only worded.
+     */
     private fun drawContainer(context: DrawContext, container: ContainerTagDto, y: Int) {
-        context.drawText(
-            textRenderer,
-            trim("${container.x}, ${container.y}, ${container.z}  ${container.kind.pretty()}"),
-            contentX, y, SeamPalette.INK, false,
-        )
-
-        // `missing` and `unreadable` make a count wrong rather than merely stale, so they are
-        // coloured and not just worded — someone scanning the list should find the broken ones
-        // without reading every row.
         val (state, colour) = when (container.state) {
             "ok" -> "seen ${container.lastSeenAt.shortTime()}" to SeamPalette.MUTED
-            "missing" -> "gone - not counted" to SeamPalette.RED
+            "missing" -> "gone" to SeamPalette.RED
             else -> "never read" to SeamPalette.LAPIS
         }
+
+        val stateWidth = textRenderer.getWidth(state)
+        val stateX = contentR - UNTAG_W - 6 - stateWidth
         context.drawText(
             textRenderer,
-            textRenderer.trimToWidth(state, contentR - contentX - UNTAG_W - 6),
-            contentX, y + LINE, colour, false,
+            textRenderer.trimToWidth(
+                "${container.x}, ${container.y}, ${container.z}  ${container.kind.pretty()}",
+                (stateX - contentX - 6).coerceAtLeast(0),
+            ),
+            contentX, y, SeamPalette.INK, false,
         )
+        context.drawText(textRenderer, state, stateX, y, colour, false)
     }
 
     /** An ISO-8601 instant is not readable at a glance; the clock time is. */
@@ -704,7 +724,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         val BATCH_DELTAS = intArrayOf(-1, -64, 1, 64, 1728)
         const val RES_ROW = 34 // TOP_H (13) + BATCH_BTN (16) + trailing pad
         const val TASK_ROW = 22
-        const val CONTAINER_ROW = 22
+        const val CONTAINER_ROW = 14
         const val CONTAINER_BTN = 16
         const val UNTAG_W = 44
         const val GAP = 6
@@ -713,6 +733,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         const val UNDO_W = 66
         const val SCROLL_STEP = 14
         const val SECTION_BTN = 16
+        const val TAB_GAP = 2
 
         val TIME = SimpleDateFormat("HH:mm:ss")
     }

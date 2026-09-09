@@ -94,18 +94,24 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
 
 ## The notebook's layout
 
-- **Three sections, one open at a time, headers pinned** (RESOURCES / TASKS / CONTAINERS). Not one
-  long scroll: a real project has 557 resources, so anything below them was five hundred rows down
-  and might as well not have existed. Not a tab strip either — mc-org removed exactly that pattern
-  in MCO-481, though its objection was a strip carrying *one* real destination, which does not
-  apply here.
-- **The headers must stay pinned.** Headers that scroll with the content put you straight back to
-  hunting for them past the resource list, which is the bug this replaced.
-- **A collapsed section's widgets are set `visible = false`, not merely skipped.** They are still
+- **Three sections behind one row of tabs** (Resources / Tasks / Containers). Not one long scroll:
+  a real project has 557 resources, so anything below them was five hundred rows down and might as
+  well not have existed. **Not three stacked full-width buttons either** — that was tried and looks
+  like three big buttons rather than a heading each, and costs 150px of a 340px panel. mc-org
+  removed a tab strip in MCO-481, but its objection was a strip carrying *one* real destination;
+  three real ones is a different question.
+- **Tab labels are a name and a count.** A third of the panel holds nothing more, and the count is
+  what makes the tab a decision rather than a guess.
+- **A hidden section's widgets are set `visible = false`, not merely skipped.** They are still
   children of the screen, so leaving them visible keeps them *clickable* at last frame's
   coordinates — an invisible `[+64]` that still adds 64.
-- **The reporter's state rides on the CONTAINERS header**, not a pinned line of its own. It is the
-  answer worth having while you work, and a header is already pinned.
+- **The reporter alarm is pinned; the fix lives inside Containers.** "Nothing is reading these" has
+  to survive whichever tab is open, because tagging chests and seeing nothing happen has no other
+  symptom. Repeating it inside the section would waste the line that can instead say what to do —
+  mint a token, or run `/seam connect` — which differs between the two failure states.
+- **Say that tagging still works** whenever the reporter is down. Told only that nothing is reading
+  them, the sensible response is to stop tagging; in fact every tag is picked up when a reporter
+  connects.
 
 ## Design decisions already made
 
