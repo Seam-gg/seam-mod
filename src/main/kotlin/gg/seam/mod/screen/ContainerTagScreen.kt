@@ -128,18 +128,26 @@ class ContainerTagScreen(
         )
         context.drawText(textRenderer, trim(statusLine()), contentX, top + 44, statusColour(), false)
 
-        when (val data = SeamDataStore.state) {
-            is SeamData.Unlinked ->
-                context.drawText(textRenderer, trim("Link a Seam account first (Settings)."), contentX, top + 62, SeamPalette.RED, false)
-            is SeamData.Unmapped ->
-                context.drawText(textRenderer, trim("This save is not bound to a Seam world yet."), contentX, top + 62, SeamPalette.RED, false)
-            is SeamData.Loading ->
-                context.drawText(textRenderer, "Loading projects...", contentX, top + 62, SeamPalette.MUTED, false)
-            is SeamData.Failed ->
-                context.drawText(textRenderer, trim(data.reason), contentX, top + 62, SeamPalette.RED, false)
-            is SeamData.Loaded -> if (data.projects.isEmpty()) {
-                context.drawText(textRenderer, trim("No projects in this Seam world yet."), contentX, top + 62, SeamPalette.MUTED, false)
+        // Two different messages, in two different places. When there is nothing to pick from, the
+        // reason goes where the buttons would have been. When there IS a list but the last refresh
+        // failed, the list is still usable — you can tag offline and it queues — so the warning
+        // goes at the foot rather than on top of the buttons.
+        val projects = SeamDataStore.projects
+        if (projects.isEmpty()) {
+            val (message, colour) = when (val data = SeamDataStore.state) {
+                is SeamData.Unlinked -> "Link a Seam account first (Settings)." to SeamPalette.RED
+                is SeamData.Unmapped -> "This save is not bound to a Seam world yet." to SeamPalette.RED
+                is SeamData.Loading -> "Loading projects..." to SeamPalette.MUTED
+                is SeamData.Failed -> data.reason to SeamPalette.RED
+                is SeamData.Loaded -> "No projects in this Seam world yet." to SeamPalette.MUTED
             }
+            context.drawText(textRenderer, trim(message), contentX, top + 62, colour, false)
+        } else if (SeamDataStore.state is SeamData.Failed) {
+            context.drawText(
+                textRenderer,
+                trim("Seam is unreachable — this list may be stale, and tags will queue."),
+                contentX, top + panelH - BTN - 22, SeamPalette.MUTED, false,
+            )
         }
 
         for (element in children()) (element as? Drawable)?.render(context, mouseX, mouseY, delta)
@@ -147,7 +155,13 @@ class ContainerTagScreen(
 
     /** The one line that says what this container is, and whether Seam knows it yet. */
     private fun statusLine(): String = when (val assignment = ContainerTagStore.assignmentFor(target)) {
-        null -> if (ContainerTagStore.loaded) "Not tagged." else "Checking..."
+        // "Not tagged" would be a claim we cannot back up while Seam is unreachable — the tag list
+        // never loaded, so this container might well be tagged and we would be saying otherwise.
+        null -> when {
+            ContainerTagStore.loaded -> "Not tagged."
+            ContainerTagStore.lastError != null -> "Can't tell yet — Seam is unreachable."
+            else -> "Checking..."
+        }
         is ContainerTagStore.Assignment.Synced -> "Tagged to ${projectName(assignment.projectId)}."
         // Said out loud rather than shown as success: a queued tag is a promise, and the player
         // should know the difference before they walk away from the chest.

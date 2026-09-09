@@ -48,6 +48,7 @@ object ContainerTagStore {
         private set
 
     private var fetchedAtMillis = 0L
+    private val inFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Pull this world's tags. The picker needs them to tell untagged from already-assigned. */
     fun refresh(
@@ -78,7 +79,11 @@ object ContainerTagStore {
      */
     fun refreshIfStale(maxAgeMillis: Long = MAX_AGE_MILLIS, now: () -> Long = System::currentTimeMillis) {
         if (loaded && now() - fetchedAtMillis < maxAgeMillis) return
-        refresh(now = now)
+        // While Seam is unreachable `loaded` never becomes true, so without an in-flight guard
+        // every screen open — and `Screen.init()` re-runs on each window resize — would stack up
+        // another doomed request.
+        if (!inFlight.compareAndSet(false, true)) return
+        refresh(now = now).whenComplete { _, _ -> inFlight.set(false) }
     }
 
     /**

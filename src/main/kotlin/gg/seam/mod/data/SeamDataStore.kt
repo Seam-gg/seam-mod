@@ -45,8 +45,19 @@ object SeamDataStore {
     var state: SeamData = SeamData.Unlinked
         private set
 
-    /** Projects from the last successful pull, or empty in every other state. */
-    val projects: List<ProjectDto> get() = (state as? SeamData.Loaded)?.projects.orEmpty()
+    /**
+     * The last projects successfully pulled, which **survive a failed refresh**.
+     *
+     * A failure replaces [state] but must not erase the list: without this, going offline empties
+     * the tagging picker of every project, so the offline queue behind it can never be reached —
+     * the one path it exists for. Screens show the list and say separately that the refresh
+     * failed, rather than pretending the world has no projects.
+     */
+    val projects: List<ProjectDto>
+        get() = (state as? SeamData.Loaded)?.projects ?: lastLoaded?.projects.orEmpty()
+
+    @Volatile
+    private var lastLoaded: SeamData.Loaded? = null
 
     /**
      * Pull projects for the bound Seam world and publish the outcome to [state].
@@ -73,6 +84,7 @@ object SeamDataStore {
                     else SeamData.Failed("Could not load projects: ${result.describe()}")
                 is ApiResult.Failure -> SeamData.Failed("Could not reach Seam: ${result.describe()}")
             }
+            if (next is SeamData.Loaded) lastLoaded = next
             state = next
             next
         }
@@ -92,6 +104,7 @@ object SeamDataStore {
 
     /** Drop cached projects (on disconnect, or when the world binding changes). */
     fun clear() {
+        lastLoaded = null
         state = if (!SeamApi.isLinked) SeamData.Unlinked else SeamData.Unmapped
     }
 
