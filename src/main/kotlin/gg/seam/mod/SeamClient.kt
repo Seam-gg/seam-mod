@@ -38,13 +38,20 @@ object SeamClient : ClientModInitializer {
     private lateinit var tagContainerKey: KeyBinding
 
     override fun onInitializeClient() {
+        // ⚠ `KeyBinding.Category.create` REGISTERS the category and throws
+        // `IllegalArgumentException: Category '<id>' is already registered` on a second call with
+        // the same id — it is not a value constructor. So it is called once here and the result is
+        // shared by every keybind. Calling it per keybind crashes the client during entrypoint
+        // init, before the main menu, which is a launch failure rather than a bug anyone can play
+        // around. 1.21.x only: the category used to be a plain String.
+        val category = KeyBinding.Category.create(Identifier.of(MOD_ID, "general"))
+
         openNotebookKey = KeyBindingHelper.registerKeyBinding(
             KeyBinding(
                 "key.seam_notebook.open_notebook",   // translation key (assets/seam_notebook/lang)
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_N,
-                // 1.21.x: category is a KeyBinding.Category record, not a String.
-                KeyBinding.Category.create(Identifier.of(MOD_ID, "general")),
+                category,
             ),
         )
 
@@ -56,7 +63,7 @@ object SeamClient : ClientModInitializer {
                 "key.seam_notebook.tag_container",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_B,
-                KeyBinding.Category.create(Identifier.of(MOD_ID, "general")),
+                category,
             ),
         )
 
