@@ -2,6 +2,7 @@ package gg.seam.mod.api
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -348,5 +349,59 @@ class ApiModelsTest {
 
         assertEquals(0L, row.measured)
         assertNull(row.oldestSeenAt)
+    }
+
+    // ── Reporter status (MCO-536) ──────────────────────────────────────────────
+
+    @Test
+    fun `a world nobody has set up decodes as neither configured nor connected`() {
+        val status = json.decodeFromString(
+            ReporterStatusDto.serializer(),
+            """{"configured":false,"connected":false,"server_count":0}""",
+        )
+
+        assertFalse(status.configured)
+        assertFalse(status.connected)
+        assertNull(status.lastSeenAt)
+    }
+
+    @Test
+    fun `configured without connected is its own state, not a half-read connected`() {
+        val status = json.decodeFromString(
+            ReporterStatusDto.serializer(),
+            """{"configured":true,"connected":false,"server_name":"survival","server_count":1}""",
+        )
+
+        // These two say different things to the player and have different fixes — mint a token
+        // versus go and run /seam connect — so collapsing them would send someone to the wrong
+        // place. The name survives even though nothing has connected, which is what makes the
+        // message name a machine rather than shrug.
+        assertTrue(status.configured)
+        assertFalse(status.connected)
+        assertEquals("survival", status.serverName)
+        assertNull(status.lastSeenAt, "nothing has pushed, so there is no last-seen to claim")
+    }
+
+    @Test
+    fun `a connected reporter carries when it was last seen and which build it is`() {
+        val status = json.decodeFromString(
+            ReporterStatusDto.serializer(),
+            """{"configured":true,"connected":true,"last_seen_at":"2026-09-09T13:11:45.644Z",
+                "reporter_version":"0.3.0+1.21.11","server_name":"survival","server_count":1}""",
+        )
+
+        assertTrue(status.connected)
+        assertEquals("2026-09-09T13:11:45.644Z", status.lastSeenAt)
+        assertEquals("0.3.0+1.21.11", status.reporterVersion)
+    }
+
+    @Test
+    fun `a server that adds fields does not break an older mod`() {
+        val status = json.decodeFromString(
+            ReporterStatusDto.serializer(),
+            """{"configured":true,"connected":true,"something_new":42}""",
+        )
+
+        assertTrue(status.connected)
     }
 }

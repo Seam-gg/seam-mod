@@ -3,6 +3,7 @@ package gg.seam.mod.tag
 import gg.seam.mod.SeamClient
 import gg.seam.mod.api.ApiResult
 import gg.seam.mod.api.ContainerTagDto
+import gg.seam.mod.api.ReporterStatusDto
 import gg.seam.mod.api.SeamApi
 import gg.seam.mod.api.SeamApiClient
 import gg.seam.mod.api.describe
@@ -38,6 +39,16 @@ object ContainerTagStore {
     var tags: List<ContainerTagDto> = emptyList()
         private set
 
+    /**
+     * Whether anything is reading this world's containers (MCO-536). Null until asked.
+     *
+     * Pulled alongside the tags because the two are only useful together: a list of tagged chests
+     * with no idea whether anything reads them is the exact situation this answers.
+     */
+    @Volatile
+    var reporter: ReporterStatusDto? = null
+        private set
+
     /** True once a pull has succeeded, so the picker can tell "no tags" from "don't know yet". */
     @Volatile
     var loaded: Boolean = false
@@ -57,6 +68,13 @@ object ContainerTagStore {
         now: () -> Long = System::currentTimeMillis,
     ): CompletableFuture<Unit> {
         val worldId = seamWorldId ?: return CompletableFuture.completedFuture(Unit)
+
+        // Reporter status rides along and is deliberately allowed to fail on its own: a broken
+        // status must not cost the caller its tag list, which is the half tagging depends on.
+        client.getReporterStatus(worldId).thenAccept { result ->
+            if (result is ApiResult.Ok) reporter = result.value
+        }
+
         return client.getContainerTags(worldId).thenApply { result ->
             when (result) {
                 is ApiResult.Ok -> {
@@ -199,6 +217,7 @@ object ContainerTagStore {
     /** Drop cached tags on disconnect — a second world must never render the first one's. */
     fun clear() {
         tags = emptyList()
+        reporter = null
         loaded = false
         lastError = null
         fetchedAtMillis = 0L
