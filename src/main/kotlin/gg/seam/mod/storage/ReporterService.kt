@@ -1,6 +1,7 @@
 package gg.seam.mod.storage
 
 import gg.seam.mod.api.ApiResult
+import gg.seam.mod.api.describe
 import gg.seam.mod.api.ReportedContainerDto
 import gg.seam.mod.api.ReportedItemDto
 import gg.seam.mod.api.ReporterContentsRequest
@@ -134,6 +135,10 @@ class ReporterService(
                 pullInFlight = false
                 when {
                     thrown != null -> fail("Could not pull container tags", thrown.javaClass.simpleName)
+                    // ⚠ ApiResult has three variants. Falling through to a catch-all `else` here
+                    // logged "unknown" for every Failure — i.e. for every unreachable webapp,
+                    // which is the one case where the reason is the whole message.
+                    result is ApiResult.Failure -> fail("Could not pull container tags", result.describe())
                     result is ApiResult.Ok -> applyTags(
                         result.value.containers.map {
                             TaggedContainer(
@@ -266,6 +271,7 @@ class ReporterService(
                 pushInFlight = false
                 when {
                     thrown != null -> fail("Could not push container contents", thrown.javaClass.simpleName)
+                    result is ApiResult.Failure -> fail("Could not push container contents", result.describe())
                     result is ApiResult.Ok -> {
                         // Only a confirmed write advances the baseline. A failed push leaves it
                         // alone, so the next one re-sends rather than dropping a change.

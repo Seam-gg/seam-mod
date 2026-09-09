@@ -37,6 +37,8 @@ object SeamClient : ClientModInitializer {
     private lateinit var openNotebookKey: KeyBinding
     private lateinit var tagContainerKey: KeyBinding
 
+    private var ticksSinceFlush = 0
+
     override fun onInitializeClient() {
         // ⚠ `KeyBinding.Category.create` REGISTERS the category and throws
         // `IllegalArgumentException: Category '<id>' is already registered` on a second call with
@@ -76,6 +78,7 @@ object SeamClient : ClientModInitializer {
             while (tagContainerKey.wasPressed()) {
                 TagGesture.openForCrosshairTarget(client)
             }
+            retryQueuedWrites()
         }
 
         // Persistence (MCO-258): load global config once; bind/unbind per-world data on connect.
@@ -105,4 +108,25 @@ object SeamClient : ClientModInitializer {
 
         logger.info("Seam Notebook (client) initialized")
     }
+
+    /**
+     * Drain the offline queue periodically while in a world.
+     *
+     * Without this the queue only moved when the player did something — joined a world, or made
+     * another edit. So the tagging picker's "will send when Seam is reachable" was a promise
+     * nothing kept: bring the webapp back up, stand still, and the tag sat there indefinitely.
+     * The server half already retries on its own cadence; this is the client half's equivalent.
+     *
+     * [SeamSync.flush] is a no-op on an empty queue and refuses to overlap itself, so the only
+     * cost of an idle tick here is a field read.
+     */
+    private fun retryQueuedWrites() {
+        if (WorldDataStore.key == null) return
+        if (++ticksSinceFlush < FLUSH_INTERVAL_TICKS) return
+        ticksSinceFlush = 0
+        if (WorldDataStore.current.queuedWrites > 0) SeamSync.flush()
+    }
+
+    /** 30 seconds at 20 tps — often enough to feel automatic, rare enough to be invisible. */
+    private const val FLUSH_INTERVAL_TICKS = 600
 }

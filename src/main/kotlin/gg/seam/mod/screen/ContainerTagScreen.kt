@@ -1,6 +1,7 @@
 package gg.seam.mod.screen
 
 import gg.seam.mod.api.ProjectDto
+import gg.seam.mod.chat.SeamChat
 import gg.seam.mod.data.SeamData
 import gg.seam.mod.data.SeamDataStore
 import gg.seam.mod.tag.ContainerTagStore
@@ -94,14 +95,44 @@ class ContainerTagScreen(
         }
     }
 
+    /**
+     * Assign and get out of the way.
+     *
+     * The picker's job is choosing; once you have chosen there is nothing left to look at, and
+     * staying open turns tagging a row of chests into a row of dialogs to dismiss. The outcome
+     * arrives in chat a moment later, which is also the only place that can tell you the truth —
+     * whether the tag reached Seam or went into the queue is not known until the request answers,
+     * by which point the screen would have been in the way for no reason.
+     *
+     * Once containers carry their tag in-world (MCO-264), even the chat line is redundant.
+     */
     private fun assign(project: ProjectDto) {
-        ContainerTagStore.tag(target, project.id).thenRun { needsRebuild = true }
-        needsRebuild = true
+        close()
+        ContainerTagStore.tag(target, project.id).thenRun { announce(project.name) }
     }
 
     private fun unassign() {
-        ContainerTagStore.untag(target).thenRun { needsRebuild = true }
-        needsRebuild = true
+        close()
+        ContainerTagStore.untag(target).thenRun { announce(null) }
+    }
+
+    /** Says what actually happened, once the request has answered. */
+    private fun announce(projectName: String?) {
+        val what = "${target.kind}${if (target.isPair) " (both halves)" else ""}"
+        when (val assignment = ContainerTagStore.assignmentFor(target)) {
+            is ContainerTagStore.Assignment.Synced ->
+                SeamChat.success("Tagged $what for ${projectName ?: projectName(assignment.projectId)}")
+            is ContainerTagStore.Assignment.Queued ->
+                if (assignment.projectId == null) {
+                    SeamChat.info("Untag queued — will send when Seam is reachable")
+                } else {
+                    SeamChat.info(
+                        "Queued $what for ${projectName ?: projectName(assignment.projectId)} " +
+                            "— will send when Seam is reachable",
+                    )
+                }
+            null -> SeamChat.success("Untagged $what")
+        }
     }
 
     override fun render(context: DrawContext, mouseX: Int, mouseY: Int, delta: Float) {

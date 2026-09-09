@@ -57,6 +57,9 @@ object SeamSync {
     var state: SyncState = SyncState.Idle
         private set
 
+    /** One flush at a time. The retry timer and a fresh tag can otherwise overlap and double-push. */
+    private val inFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /**
      * Push everything queued, then clear what succeeded.
      *
@@ -72,6 +75,7 @@ object SeamSync {
         now: () -> Long = System::currentTimeMillis,
     ): CompletableFuture<FlushResult> {
         if (data.queuedWrites == 0) return CompletableFuture.completedFuture(FlushResult())
+        if (!inFlight.compareAndSet(false, true)) return CompletableFuture.completedFuture(FlushResult())
 
         state = SyncState.Syncing
         var chain = CompletableFuture.completedFuture(FlushResult())
@@ -149,7 +153,7 @@ object SeamSync {
             commit(result)
             state = if (result.failure != null) SyncState.Failed(result.failure) else SyncState.Synced(now())
             result
-        }
+        }.whenComplete { _, _ -> inFlight.set(false) }
     }
 
     /**
