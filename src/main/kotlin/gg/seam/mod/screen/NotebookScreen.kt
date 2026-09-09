@@ -94,12 +94,29 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
      */
     private var builtForProjectId: Int? = null
 
+    /**
+     * The notebook's three sections, one open at a time.
+     *
+     * An accordion rather than a tab strip, and rather than one long scroll. The long scroll was
+     * the bug: a real project has 557 resources, so TASKS and CONTAINERS sat five hundred rows down
+     * and might as well not have existed. A tab strip was the other candidate and mc-org removed
+     * exactly that pattern in MCO-481 — though its objection was a strip carrying one real
+     * destination, which does not apply to three.
+     *
+     * The headers are **pinned**, not scrolled with the content. That is the whole point: headers
+     * that scroll away put you back to hunting for them past the resource list.
+     */
+    private enum class Section { RESOURCES, TASKS, CONTAINERS }
+
+    private var expanded = Section.RESOURCES
+    private val sectionButtons = linkedMapOf<Section, ButtonWidget>()
+
     /** How many container rows the buttons were built for, so a late pull rebuilds them. */
     private var builtForContainerCount = -1
 
     override fun init() {
         panelW = minOf(360, width - 20)
-        panelH = minOf(300, height - 20)
+        panelH = minOf(340, height - 20)
         left = (width - panelW) / 2
         top = (height - panelH) / 2
         contentX = left + PAD
@@ -145,11 +162,61 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
                 .dimensions(contentR - CLOSE_W - 4 - UNDO_W, footerTop + 2, UNDO_W, BTN).build(),
         )
 
+        // ---- pinned section headers ----
+        // Full-width buttons rather than drawn text: a clickable heading that does not look
+        // clickable is a heading nobody clicks, and every other control on this screen is a button.
+        var sy = statusY + LINE + 4
+        sectionButtons.clear()
+        for (section in Section.entries) {
+            sectionButtons[section] = addDrawableChild(
+                ButtonWidget.builder(Text.literal(sectionLabel(section))) { openSection(section) }
+                    .dimensions(contentX, sy, contentR - contentX, SECTION_BTN).build(),
+            )
+            sy += SECTION_BTN + 1
+        }
+
         // ---- scrollable body ----
-        bodyTop = statusY + LINE + 4
+        bodyTop = sy + 3
         bodyBottom = footerTop - 2
 
         buildResourceButtons()
+    }
+
+    private fun openSection(section: Section) {
+        if (expanded == section) return
+        expanded = section
+        scroll = 0
+        buildResourceButtons()
+    }
+
+    /** `v RESOURCES  12 / 557` — the marker says open, the counts say whether it is worth opening. */
+    private fun sectionLabel(section: Section): String {
+        val marker = if (section == expanded) "v" else ">"
+        val current = project
+        val detail = when (section) {
+            Section.RESOURCES -> {
+                val done = current?.resources?.count { displayedCount(current.id, it) >= it.required } ?: 0
+                "$done / ${current?.resources?.size ?: 0}"
+            }
+            Section.TASKS -> {
+                val done = current?.tasks?.count { completedOf(current.id, it) } ?: 0
+                "$done / ${current?.tasks?.size ?: 0}"
+            }
+            // The reporter's state rides on this header rather than taking a pinned line of its
+            // own. It is the answer worth having *while* you work, and a header is already pinned.
+            Section.CONTAINERS -> "${containers.size} tagged  ${reporterSummary()}"
+        }
+        return "$marker ${section.name}  $detail"
+    }
+
+    /** The shortest true thing about the reporter, for the pinned header. */
+    private fun reporterSummary(): String {
+        val status = ContainerTagStore.reporter
+        return when {
+            status == null -> ""
+            !status.configured || !status.connected -> "- NOT READ"
+            else -> "- read ${status.lastSeenAt.shortTime()}"
+        }
     }
 
     /**
@@ -243,10 +310,12 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         contentHeight = if (current == null) {
             LINE * 4
         } else {
-            (LINE + 4) + current.resources.size * RES_ROW +
-                GAP + (LINE + 4) + current.tasks.size * TASK_ROW +
-                // CONTAINERS: header, the reporter line, then a row each (or one "none" line).
-                GAP + (LINE + 4) + (LINE + 4) + maxOf(1, containers.size) * CONTAINER_ROW
+            when (expanded) {
+                Section.RESOURCES -> maxOf(1, current.resources.size) * RES_ROW
+                Section.TASKS -> maxOf(1, current.tasks.size) * TASK_ROW
+                // Two lines for the reporter sentence, which wraps to a second when disconnected.
+                Section.CONTAINERS -> (LINE * 2 + 4) + maxOf(1, containers.size) * CONTAINER_ROW
+            }
         }
         maxScroll = maxOf(0, contentHeight - (bodyBottom - bodyTop))
         scroll = scroll.coerceIn(0, maxScroll)
@@ -288,6 +357,13 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         settingsButton.render(context, mouseX, mouseY, delta)
         projectButton.render(context, mouseX, mouseY, delta)
         refreshButton.render(context, mouseX, mouseY, delta)
+
+        // Counts move while the notebook is open — a batch button, a sweep landing — so the header
+        // text is rebuilt per frame rather than at init, the same way the project label is.
+        for ((section, button) in sectionButtons) {
+            button.message = Text.literal(textRenderer.trimToWidth(sectionLabel(section), button.width - 8))
+            button.render(context, mouseX, mouseY, delta)
+        }
 
         // scrollable body
         context.enableScissor(left + 1, bodyTop, left + panelW - 1, bodyBottom)
@@ -335,56 +411,65 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         mouseY: Int,
         delta: Float,
     ) {
+        // A collapsed section's widgets are still children of this screen, so leaving them visible
+        // would render them at last frame's coordinates and — worse — leave them clickable. An
+        // invisible [+64] that still adds 64 is the kind of bug nobody reports because nobody
+        // believes it.
+        batchButtons.flatten().forEach { it.visible = expanded == Section.RESOURCES }
+        taskButtons.forEach { it.visible = expanded == Section.TASKS }
+        untagButtons.forEach { it.visible = expanded == Section.CONTAINERS }
+
         var cy = bodyTop - scroll
-        cy = sectionHeader(context, "RESOURCES", cy)
-        if (current.resources.isEmpty()) {
-            context.drawText(textRenderer, "No resources tracked yet.", contentX, cy, SeamPalette.MUTED, false)
-            cy += LINE + 4
-        }
-        current.resources.forEachIndexed { i, resource ->
-            drawResource(context, current.id, resource, cy)
-            val visible = cy >= bodyTop && cy + RES_ROW <= bodyBottom
-            batchButtons.getOrNull(i)?.forEach { button ->
-                button.y = cy + TOP_H
-                button.active = visible
-                button.render(context, mouseX, mouseY, delta)
+        when (expanded) {
+            Section.RESOURCES -> {
+                if (current.resources.isEmpty()) {
+                    context.drawText(textRenderer, "No resources tracked yet.", contentX, cy, SeamPalette.MUTED, false)
+                }
+                current.resources.forEachIndexed { i, resource ->
+                    drawResource(context, current.id, resource, cy)
+                    val visible = cy >= bodyTop && cy + RES_ROW <= bodyBottom
+                    batchButtons.getOrNull(i)?.forEach { button ->
+                        button.y = cy + TOP_H
+                        button.active = visible
+                        button.render(context, mouseX, mouseY, delta)
+                    }
+                    cy += RES_ROW
+                }
             }
-            cy += RES_ROW
-        }
-        cy += GAP
-        cy = sectionHeader(context, "TASKS", cy)
-        if (current.tasks.isEmpty()) {
-            context.drawText(textRenderer, "No tasks yet.", contentX, cy, SeamPalette.MUTED, false)
-        }
-        current.tasks.forEachIndexed { i, _ ->
-            val button = taskButtons.getOrNull(i) ?: return@forEachIndexed
-            button.y = cy
-            button.active = cy >= bodyTop && cy + BTN <= bodyBottom
-            button.render(context, mouseX, mouseY, delta)
-            cy += TASK_ROW
-        }
 
-        cy += GAP
-        cy = sectionHeader(context, "CONTAINERS", cy)
-        cy = drawReporterLine(context, cy)
-
-        val tagged = containers
-        if (tagged.isEmpty()) {
-            context.drawText(
-                textRenderer,
-                trim("No containers tagged for this project."),
-                contentX, cy, SeamPalette.MUTED, false,
-            )
-            cy += CONTAINER_ROW
-        }
-        tagged.forEachIndexed { i, container ->
-            drawContainer(context, container, cy)
-            untagButtons.getOrNull(i)?.let { button ->
-                button.y = cy - 3
-                button.active = cy >= bodyTop && cy + CONTAINER_BTN <= bodyBottom
-                button.render(context, mouseX, mouseY, delta)
+            Section.TASKS -> {
+                if (current.tasks.isEmpty()) {
+                    context.drawText(textRenderer, "No tasks yet.", contentX, cy, SeamPalette.MUTED, false)
+                }
+                current.tasks.forEachIndexed { i, _ ->
+                    val button = taskButtons.getOrNull(i) ?: return@forEachIndexed
+                    button.y = cy
+                    button.active = cy >= bodyTop && cy + BTN <= bodyBottom
+                    button.render(context, mouseX, mouseY, delta)
+                    cy += TASK_ROW
+                }
             }
-            cy += CONTAINER_ROW
+
+            Section.CONTAINERS -> {
+                cy = drawReporterLine(context, cy)
+                val tagged = containers
+                if (tagged.isEmpty()) {
+                    context.drawText(
+                        textRenderer,
+                        trim("No containers tagged for this project."),
+                        contentX, cy, SeamPalette.MUTED, false,
+                    )
+                }
+                tagged.forEachIndexed { i, container ->
+                    drawContainer(context, container, cy)
+                    untagButtons.getOrNull(i)?.let { button ->
+                        button.y = cy - 3
+                        button.active = cy >= bodyTop && cy + CONTAINER_BTN <= bodyBottom
+                        button.render(context, mouseX, mouseY, delta)
+                    }
+                    cy += CONTAINER_ROW
+                }
+            }
         }
     }
 
@@ -627,6 +712,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         const val CLOSE_W = 78
         const val UNDO_W = 66
         const val SCROLL_STEP = 14
+        const val SECTION_BTN = 16
 
         val TIME = SimpleDateFormat("HH:mm:ss")
     }

@@ -92,6 +92,21 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
   then calls `SeamSync.flush()`, so a tag survives the game closing mid-request and there is one
   code path to the API rather than two that can drift.
 
+## The notebook's layout
+
+- **Three sections, one open at a time, headers pinned** (RESOURCES / TASKS / CONTAINERS). Not one
+  long scroll: a real project has 557 resources, so anything below them was five hundred rows down
+  and might as well not have existed. Not a tab strip either — mc-org removed exactly that pattern
+  in MCO-481, though its objection was a strip carrying *one* real destination, which does not
+  apply here.
+- **The headers must stay pinned.** Headers that scroll with the content put you straight back to
+  hunting for them past the resource list, which is the bug this replaced.
+- **A collapsed section's widgets are set `visible = false`, not merely skipped.** They are still
+  children of the screen, so leaving them visible keeps them *clickable* at last frame's
+  coordinates — an invisible `[+64]` that still adds 64.
+- **The reporter's state rides on the CONTAINERS header**, not a pinned line of its own. It is the
+  answer worth having while you work, and a header is already pinned.
+
 ## Design decisions already made
 
 - **Notebook opener = keybind** (default `N`), not a custom item: a client-only item is invisible to
