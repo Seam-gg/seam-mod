@@ -6,6 +6,29 @@ import kotlinx.serialization.Serializable
 import java.util.concurrent.CompletableFuture
 
 /**
+ * A tag the player made that has not reached Seam yet (MCO-261).
+ *
+ * Keyed by position, so re-tagging the same chest three times offline collapses to the last
+ * intent rather than replaying three writes. [projectId] null means **untag**, and [containerId] is
+ * the webapp row to delete — absent when the tag itself never got there, in which case there is
+ * nothing to delete and the queued entry is simply dropped.
+ */
+@Serializable
+data class PendingContainerTag(
+    @SerialName("dimension") val dimension: String,
+    @SerialName("x") val x: Int,
+    @SerialName("y") val y: Int,
+    @SerialName("z") val z: Int,
+    @SerialName("kind") val kind: String,
+    @SerialName("group_key") val groupKey: String,
+    @SerialName("project_id") val projectId: Int? = null,
+    @SerialName("container_id") val containerId: Long? = null,
+) {
+    /** Identity in the queue: one intent per position. */
+    val key: String get() = "$dimension@$x,$y,$z"
+}
+
+/**
  * Per-world / per-server state, stored at `seam/worlds/<WorldKey.fileName>`. Binds this local world
  * to a Seam world ([seamWorldId]) and holds the manual resource counts the player enters in the
  * notebook. See docs/fabric-1.21.11-reference.md §7.
@@ -17,13 +40,17 @@ import java.util.concurrent.CompletableFuture
  */
 @Serializable
 data class WorldData(
-    val version: Int = 3,
+    // 4: pending_container_tags (MCO-261). Older files still decode — the field has a default —
+    // so this is a marker, not a migration.
+    val version: Int = 4,
     @SerialName("seam_world_id") val seamWorldId: Int? = null,
     @SerialName("resource_counts") val resourceCounts: Map<Int, Map<String, Int>> = emptyMap(),
     /** Projects whose local counts haven't reached Seam yet — the offline queue (MCO-269). */
     @SerialName("pending_resource_projects") val pendingResourceProjects: Set<Int> = emptySet(),
     /** Task toggles not yet pushed, project id → task id → desired completed state. */
     @SerialName("pending_tasks") val pendingTasks: Map<Int, Map<Int, Boolean>> = emptyMap(),
+    /** Container tags not yet pushed, by [PendingContainerTag.key] (MCO-261). */
+    @SerialName("pending_container_tags") val pendingContainerTags: Map<String, PendingContainerTag> = emptyMap(),
 ) {
     /** Local count for [itemId] under [projectId], or 0 if the player hasn't touched it. */
     fun count(projectId: Int, itemId: String): Int =
@@ -67,8 +94,20 @@ data class WorldData(
         )
     }
 
+    /** The queued intent for a position, or null when nothing is waiting for it. */
+    fun pendingContainerTag(key: String): PendingContainerTag? = pendingContainerTags[key]
+
+    /** Copy with a tag intent queued, replacing any earlier intent for the same position. */
+    fun withPendingContainerTag(tag: PendingContainerTag): WorldData =
+        copy(pendingContainerTags = pendingContainerTags + (tag.key to tag))
+
+    /** Copy with a queued tag intent removed — because it reached Seam, or was superseded. */
+    fun withoutPendingContainerTag(key: String): WorldData =
+        copy(pendingContainerTags = pendingContainerTags - key)
+
     /** How many queued writes are waiting — what the notebook footer reports. */
-    val queuedWrites: Int get() = pendingResourceProjects.size + pendingTasks.values.sumOf { it.size }
+    val queuedWrites: Int
+        get() = pendingResourceProjects.size + pendingTasks.values.sumOf { it.size } + pendingContainerTags.size
 
     /**
      * Copy bound to Seam world [worldId]. Counts and queued writes are dropped, since project and
@@ -83,6 +122,8 @@ data class WorldData(
                 resourceCounts = emptyMap(),
                 pendingResourceProjects = emptySet(),
                 pendingTasks = emptyMap(),
+                // Container tags name a project too, so they are as world-scoped as the rest.
+                pendingContainerTags = emptyMap(),
             )
         }
 }

@@ -9,6 +9,8 @@ import gg.seam.mod.data.SeamSync
 import gg.seam.mod.data.WorldDataStore
 import gg.seam.mod.data.WorldKey
 import gg.seam.mod.screen.NotebookScreen
+import gg.seam.mod.tag.ContainerTagStore
+import gg.seam.mod.tag.TagGesture
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
 import net.minecraft.client.option.KeyBinding
 import net.minecraft.client.util.InputUtil
@@ -33,22 +35,50 @@ object SeamClient : ClientModInitializer {
     val logger = LoggerFactory.getLogger(MOD_ID)
 
     private lateinit var openNotebookKey: KeyBinding
+    private lateinit var tagContainerKey: KeyBinding
+
+    private var ticksSinceFlush = 0
 
     override fun onInitializeClient() {
+        // ⚠ `KeyBinding.Category.create` REGISTERS the category and throws
+        // `IllegalArgumentException: Category '<id>' is already registered` on a second call with
+        // the same id — it is not a value constructor. So it is called once here and the result is
+        // shared by every keybind. Calling it per keybind crashes the client during entrypoint
+        // init, before the main menu, which is a launch failure rather than a bug anyone can play
+        // around. 1.21.x only: the category used to be a plain String.
+        val category = KeyBinding.Category.create(Identifier.of(MOD_ID, "general"))
+
         openNotebookKey = KeyBindingHelper.registerKeyBinding(
             KeyBinding(
                 "key.seam_notebook.open_notebook",   // translation key (assets/seam_notebook/lang)
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_N,
-                // 1.21.x: category is a KeyBinding.Category record, not a String.
-                KeyBinding.Category.create(Identifier.of(MOD_ID, "general")),
+                category,
             ),
         )
+
+        // The second way into the tag picker (MCO-261). The gesture — empty hand, sneak,
+        // right-click — is the primary one; this exists because a builder's hotbar is rarely empty
+        // and emptying a hand to tag a chest is a silly thing to have to do.
+        tagContainerKey = KeyBindingHelper.registerKeyBinding(
+            KeyBinding(
+                "key.seam_notebook.tag_container",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_B,
+                category,
+            ),
+        )
+
+        TagGesture.register()
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             while (openNotebookKey.wasPressed()) {
                 client.setScreen(NotebookScreen())
             }
+            while (tagContainerKey.wasPressed()) {
+                TagGesture.openForCrosshairTarget(client)
+            }
+            retryQueuedWrites()
         }
 
         // Persistence (MCO-258): load global config once; bind/unbind per-world data on connect.
@@ -72,9 +102,31 @@ object SeamClient : ClientModInitializer {
             WorldDataStore.unload()
             // Drop the cache too, so a second world never renders the first one's projects.
             SeamDataStore.clear()
+            ContainerTagStore.clear()
             SeamSync.clear()
         }
 
         logger.info("Seam Notebook (client) initialized")
     }
+
+    /**
+     * Drain the offline queue periodically while in a world.
+     *
+     * Without this the queue only moved when the player did something — joined a world, or made
+     * another edit. So the tagging picker's "will send when Seam is reachable" was a promise
+     * nothing kept: bring the webapp back up, stand still, and the tag sat there indefinitely.
+     * The server half already retries on its own cadence; this is the client half's equivalent.
+     *
+     * [SeamSync.flush] is a no-op on an empty queue and refuses to overlap itself, so the only
+     * cost of an idle tick here is a field read.
+     */
+    private fun retryQueuedWrites() {
+        if (WorldDataStore.key == null) return
+        if (++ticksSinceFlush < FLUSH_INTERVAL_TICKS) return
+        ticksSinceFlush = 0
+        if (WorldDataStore.current.queuedWrites > 0) SeamSync.flush()
+    }
+
+    /** 30 seconds at 20 tps — often enough to feel automatic, rare enough to be invisible. */
+    private const val FLUSH_INTERVAL_TICKS = 600
 }

@@ -31,6 +31,13 @@ class SeamDataStoreTest {
     private fun client() = SeamApiClient(baseUrl = { baseUrl }, token = { "test-token" })
 
     @BeforeTest
+    fun resetStore() {
+        // SeamDataStore is an object, so the last-known project list outlives a test. Without this
+        // the cache-survives-a-failure behaviour below would make test ORDER decide the result.
+        SeamDataStore.clear()
+    }
+
+    @BeforeTest
     fun startServer() {
         server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
         server.createContext("/") { exchange -> respond(exchange) }
@@ -121,7 +128,7 @@ class SeamDataStoreTest {
     }
 
     @Test
-    fun `an unreachable server is a failure and leaves no stale projects`() {
+    fun `an unreachable server is a failure, and with nothing cached there are no projects`() {
         val state = SeamDataStore.refresh(
             client = SeamApiClient(baseUrl = { "http://127.0.0.1:1" }, token = { "t" }),
             isLinked = true,
@@ -130,5 +137,44 @@ class SeamDataStoreTest {
 
         assertIs<SeamData.Failed>(state)
         assertTrue(SeamDataStore.projects.isEmpty())
+    }
+
+    @Test
+    fun `a failed refresh keeps the projects it last knew about`() {
+        responseBody = """
+            [{"id":9,"name":"Iron Farm","stage":"GATHERING","state":"IN_PROGRESS",
+              "resources":[],"tasks":[]}]
+        """.trimIndent()
+        assertIs<SeamData.Loaded>(refresh())
+
+        val state = SeamDataStore.refresh(
+            client = SeamApiClient(baseUrl = { "http://127.0.0.1:1" }, token = { "t" }),
+            isLinked = true,
+            seamWorldId = 3,
+        ).get(10, TimeUnit.SECONDS)
+
+        // Changed deliberately (MCO-261). This used to assert the opposite — that a failure left no
+        // stale projects — which was defensible while the notebook was the only reader. It is not
+        // defensible now: the tagging picker builds its buttons from this list, and
+        // `refreshIfStale` fires on every screen open, so going offline emptied the picker and made
+        // the offline queue unreachable. That queue exists for exactly this moment.
+        //
+        // The state still says Failed, and the picker says so on screen. What it must not do is
+        // claim the world has no projects.
+        assertIs<SeamData.Failed>(state)
+        assertEquals(listOf("Iron Farm"), SeamDataStore.projects.map { it.name })
+    }
+
+    @Test
+    fun `clearing drops the remembered projects, so another world never shows this one's`() {
+        responseBody = """
+            [{"id":9,"name":"Iron Farm","stage":"GATHERING","state":"IN_PROGRESS",
+              "resources":[],"tasks":[]}]
+        """.trimIndent()
+        assertIs<SeamData.Loaded>(refresh())
+
+        SeamDataStore.clear()
+
+        assertTrue(SeamDataStore.projects.isEmpty(), "a disconnect must not leak projects forward")
     }
 }

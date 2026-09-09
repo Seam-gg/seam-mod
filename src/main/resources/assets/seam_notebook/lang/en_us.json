@@ -1,4 +1,5 @@
 {
   "key.categories.seam_notebook.general": "Seam",
-  "key.seam_notebook.open_notebook": "Open Seam Notebook"
+  "key.seam_notebook.open_notebook": "Open Seam Notebook",
+  "key.seam_notebook.tag_container": "Tag container for a project"
 }

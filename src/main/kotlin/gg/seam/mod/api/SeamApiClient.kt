@@ -106,6 +106,47 @@ class SeamApiClient(
                 .build()
         }
 
+    // ── Container tags (MCO-530 / MCO-261) ─────────────────────────────────────
+
+    /**
+     * `GET /worlds/{id}/containers` — every tag in the world, as the tagging gesture needs them to
+     * tell "untagged" from "already this project's".
+     *
+     * A **player** token, not a reporter token: tagging is attributed to a person, and the reporter
+     * deliberately cannot do it.
+     */
+    fun getContainerTags(worldId: Int): CompletableFuture<ApiResult<ContainerTagsResponse>> =
+        send(ContainerTagsResponse.serializer()) {
+            request("/worlds/${worldId.pathSegment()}/containers").GET().build()
+        }
+
+    /**
+     * `POST /worlds/{id}/containers` — tag a position, or move the tag already there.
+     *
+     * Create and move are the same call, keyed on the position, so the gesture never has to ask
+     * which one it is doing. Both halves of a joined chest are posted separately with a shared
+     * `group_key`.
+     */
+    fun tagContainer(
+        worldId: Int,
+        body: ContainerTagRequest,
+    ): CompletableFuture<ApiResult<ContainerTagDto>> =
+        send(ContainerTagDto.serializer()) {
+            request("/worlds/${worldId.pathSegment()}/containers")
+                .POST(jsonBody(ContainerTagRequest.serializer(), body))
+                .header("Content-Type", JSON)
+                .build()
+        }
+
+    /**
+     * `DELETE /worlds/{id}/containers/{containerId}` — untag, which also drops the container's
+     * contribution to the count immediately rather than waiting for a sweep to notice.
+     */
+    fun untagContainer(worldId: Int, containerId: Long): CompletableFuture<ApiResult<OkResponse>> =
+        send(OkResponse.serializer()) {
+            request("/worlds/${worldId.pathSegment()}/containers/$containerId").DELETE().build()
+        }
+
     // ── Reporter (MCO-532 / MCO-535) ───────────────────────────────────────────
 
     /**

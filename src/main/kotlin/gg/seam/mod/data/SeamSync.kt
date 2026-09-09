@@ -1,6 +1,9 @@
 package gg.seam.mod.data
 
+import gg.seam.mod.SeamClient
 import gg.seam.mod.api.ApiResult
+import gg.seam.mod.api.ContainerTagRequest
+import gg.seam.mod.api.OkResponse
 import gg.seam.mod.api.SeamApi
 import gg.seam.mod.api.SeamApiClient
 import gg.seam.mod.api.SyncResourceItem
@@ -19,9 +22,14 @@ data class TaskRef(val projectId: Int, val taskId: Int)
 data class FlushResult(
     val syncedProjects: Set<Int> = emptySet(),
     val syncedTasks: List<TaskRef> = emptyList(),
+    /** Keys of container-tag intents that reached Seam (MCO-261). */
+    val syncedContainerTags: List<String> = emptyList(),
+    /** Keys the server refused permanently. De-queued like a success, but not one. */
+    val rejectedContainerTags: List<String> = emptyList(),
     val failure: String? = null,
 ) {
-    val pushed: Int get() = syncedProjects.size + syncedTasks.size
+    val pushed: Int
+        get() = syncedProjects.size + syncedTasks.size + syncedContainerTags.size + rejectedContainerTags.size
 }
 
 /** Where the last push got to. The notebook footer renders this next to the queued-writes count. */
@@ -49,6 +57,9 @@ object SeamSync {
     var state: SyncState = SyncState.Idle
         private set
 
+    /** One flush at a time. The retry timer and a fresh tag can otherwise overlap and double-push. */
+    private val inFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /**
      * Push everything queued, then clear what succeeded.
      *
@@ -64,6 +75,7 @@ object SeamSync {
         now: () -> Long = System::currentTimeMillis,
     ): CompletableFuture<FlushResult> {
         if (data.queuedWrites == 0) return CompletableFuture.completedFuture(FlushResult())
+        if (!inFlight.compareAndSet(false, true)) return CompletableFuture.completedFuture(FlushResult())
 
         state = SyncState.Syncing
         var chain = CompletableFuture.completedFuture(FlushResult())
@@ -101,11 +113,96 @@ object SeamSync {
             }
         }
 
+        // Container tags (MCO-261). Ordered after the rest for no reason beyond determinism; they
+        // share the queue but nothing else touches the same rows.
+        val worldId = data.seamWorldId
+        for (pending in data.pendingContainerTags.values.sortedBy { it.key }) {
+            chain = chain.thenCompose { acc ->
+                if (acc.failure != null) return@thenCompose CompletableFuture.completedFuture(acc)
+                if (worldId == null) {
+                    // Nothing to address the write to. Dropping beats retrying forever: the world
+                    // binding is gone, so this tag names a project id that means nothing now.
+                    return@thenCompose CompletableFuture.completedFuture(
+                        acc.copy(syncedContainerTags = acc.syncedContainerTags + pending.key),
+                    )
+                }
+                pushContainerTag(client, worldId, pending).thenApply { result ->
+                    when (result) {
+                        is ApiResult.Ok -> acc.copy(syncedContainerTags = acc.syncedContainerTags + pending.key)
+                        is ApiResult.Error ->
+                            if (isPermanent(result.status)) {
+                                // The server will never accept this one, so retrying it does not
+                                // eventually succeed — it wedges the queue forever, and every
+                                // resource count and task toggle behind it with it, because the
+                                // chain stops at the first failure. Drop it and say so out loud.
+                                SeamClient.logger.warn(
+                                    "Seam rejected a container tag at {},{},{} and it has been dropped: {}",
+                                    pending.x, pending.y, pending.z, result.describe(),
+                                )
+                                acc.copy(rejectedContainerTags = acc.rejectedContainerTags + pending.key)
+                            } else {
+                                acc.copy(failure = result.describe())
+                            }
+                        is ApiResult.Failure -> acc.copy(failure = result.describe())
+                    }
+                }
+            }
+        }
+
         return chain.thenApply { result ->
             commit(result)
+            // A queued tag reaching Seam was completely silent: `ContainerTagStore` logs when you
+            // MAKE a tag and this class logs when one is REJECTED, so the successful case — the
+            // one the offline queue exists to produce — left no trace at all. Silent success reads
+            // exactly like a lost tag, and there is no way to tell them apart from inside the game.
+            if (result.syncedContainerTags.isNotEmpty()) {
+                SeamClient.logger.info(
+                    "Sent {} queued container tag(s) to Seam",
+                    result.syncedContainerTags.size,
+                )
+            }
             state = if (result.failure != null) SyncState.Failed(result.failure) else SyncState.Synced(now())
             result
-        }
+        }.whenComplete { _, _ -> inFlight.set(false) }
+    }
+
+    /**
+     * Whether [status] means "never going to work", so the intent should be dropped rather than
+     * retried forever.
+     *
+     * A **401 is deliberately retryable**: the token expired, the player re-links, and the queue
+     * then flushes — dropping their tags on the way would be the wrong answer to a fixable problem.
+     * So are 408 and 429, which are explicitly "try later". Everything else in the 4xx range is the
+     * server saying this request is wrong, and it will still be wrong next time — a 404 because the
+     * container was untagged in the web app (the intent is already satisfied), a 400 or 403 because
+     * the request or the caller is not acceptable and no amount of waiting changes that.
+     */
+    private fun isPermanent(status: Int): Boolean =
+        status in 400..499 && status != 401 && status != 408 && status != 429
+
+    /**
+     * One queued intent, as the API call it stands for.
+     *
+     * An untag with no [PendingContainerTag.containerId] is a tag that never reached Seam in the
+     * first place — there is no row to delete, so the intent is satisfied by dropping it.
+     */
+    private fun pushContainerTag(
+        client: SeamApiClient,
+        worldId: Int,
+        pending: PendingContainerTag,
+    ): CompletableFuture<out ApiResult<*>> = when {
+        pending.projectId != null -> client.tagContainer(
+            worldId,
+            ContainerTagRequest(
+                dimension = pending.dimension,
+                x = pending.x, y = pending.y, z = pending.z,
+                projectId = pending.projectId,
+                kind = pending.kind,
+                groupKey = pending.groupKey,
+            ),
+        )
+        pending.containerId != null -> client.untagContainer(worldId, pending.containerId)
+        else -> CompletableFuture.completedFuture(ApiResult.Ok(OkResponse()))
     }
 
     /**
@@ -119,6 +216,8 @@ object SeamSync {
             var next = data
             result.syncedProjects.forEach { next = next.withProjectReset(it) }
             result.syncedTasks.forEach { next = next.withoutPendingTask(it.projectId, it.taskId) }
+            result.syncedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
+            result.rejectedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
             next
         }
     }

@@ -51,6 +51,7 @@ The single most valuable output of the sweep. Every one of these will silently b
 | H9 | **`assets/<ns>/items/<name>.json`** item-model definition required | **1.21.4** | Notebook item asset. |
 | H10 | **Fabric docs site now renders Mojmap + a newer-snapshot render model** (`extractRenderState`, `Component`, `addRenderableWidget`) that does NOT match 1.21.11 Yarn | current | Don't copy the docs site's render/GUI prose verbatim — translate names, ignore `extractRenderState`. |
 | H11 | **HUD rendering** — `HudRenderCallback` superseded by `…rendering.v1.hud.HudElementRegistry` + `HudElement.render(DrawContext, RenderTickCounter)`, ordered against `VanillaHudElements.*` | **fabric-api ≥1.21.6** | The storage HUD (§9). Verified against `fabric-rendering-v1` 16.2.10 in this project's own dependency graph. |
+| H13 | **`KeyBinding.Category.create` registers** — a second call with the same id throws `IllegalArgumentException: Category '<id>' is already registered`, during entrypoint init | **1.21.x** (category became a record) | Any mod with **two** keybinds. Crashes the client before the main menu, so it is a launch failure. Call it once and share the value. |
 | H12 | **Command permissions are predicates, not ints** — `ServerCommandSource.hasPermissionLevel(int)` **removed**; use `CommandManager.OWNERS_CHECK.allows(source.permissions)` and friends from `net.minecraft.command.permission` | **1.21.11** | `/seam` (§10). Every command tutorial in existence calls the removed method, so this fails to compile the moment you copy one. |
 
 **Mappings:** all snippets below are **Yarn**. If the build uses Mojmap, translate (`MinecraftClient`→`Minecraft`, `Text`→`Component`, `ButtonWidget`→`Button`, `addDrawableChild`→`addRenderableWidget`, `Identifier`→`ResourceLocation`, etc.). Pick one and stay consistent.
@@ -341,6 +342,28 @@ Feedback is `source.sendFeedback({ Text.literal(...) }, broadcastToOps)` — the
 **supplier**, evaluated only if it is actually going to be shown — and `source.sendError(Text)`.
 
 ---
+
+### Client commands share a namespace with server commands, and lose badly
+
+> Added 2026-09-08 while scoping the tagging gesture (MCO-261). Read from
+> `fabric-command-api-v2` 2.4.7's own source, not inferred.
+
+`ClientCommandRegistrationCallback` + `ClientCommandManager` register into a **separate dispatcher**
+that the client tries **first**. When it throws, only two exception types fall through to the
+server:
+
+```java
+// ClientCommandInternals.isIgnoredException
+return type == builtins.dispatcherUnknownCommand() || type == builtins.dispatcherParseException();
+```
+
+`dispatcherUnknownArgument` is **not** among them. So registering a client command whose root name
+matches a server command breaks the server one: `/seam tag` client-side means `/seam connect …`
+parses `/seam`, fails on `connect` with *unknown argument*, is reported as a client-side error, and
+**never reaches the server**. The failure lands on exactly the users who installed the mod.
+
+A client command must therefore take a root name no server command uses. This is why tagging is a
+gesture and a keybind rather than `/seam tag` — the mod already owns `/seam` on the server half.
 
 ## Source index
 Full per-slice source URLs are in the six agent transcripts. Primary anchors: `meta.fabricmc.net`, `maven.fabricmc.net/docs/yarn-1.21.11+build.3` (and build.4/.6), `docs.fabricmc.net/develop` (Mojmap — translate), Fabric release notes 2025-09-23 (1.21.9/.10) and 2025-12-05 (1.21.11), fabric-api issues #1130 (pickup) and #4902 (WorldRenderEvents redesign).

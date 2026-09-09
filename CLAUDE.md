@@ -72,6 +72,26 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
   (MCO-531) — not a player's device-code token. It lives in a plaintext config file on someone else's
   machine; scope it accordingly.
 
+## Tagging (Phase C, MCO-261)
+
+- **The gesture is empty main hand + sneak + right-click a whitelisted container**, plus a keybind
+  (default `B`) that acts on whatever the crosshair is on. The empty-hand rule is not decoration:
+  sneak + right-click with something held is how you place a block against a chest, and
+  intercepting that would break building in a way nobody would attribute to a tagging feature.
+- **`UseBlockCallback` returns `FAIL`, never `SUCCESS`.** `SUCCESS` also sends an interaction
+  packet, which on a server that does not know about the screen is an ordinary use-block — the
+  chest opens behind the picker.
+- **Not a command.** A client command sharing a root with a server command breaks the server one
+  (see `docs/fabric-1.21.11-reference.md` §10), and the mod already owns `/seam` on the server half.
+- **Re-tagging moves the container silently.** The picker shows the current assignment, and once
+  in-world labels land (MCO-264) it is visible without opening anything; a confirm step would be
+  friction on the common case.
+- **One whitelist, three places.** `ContainerKind` is shared by the sweep and the gesture, and
+  mirrors `container_tags.kind`'s CHECK constraint in mc-org. Change all three together.
+- **Tags queue before they push.** `ContainerTagStore` writes the intent to the per-world file and
+  then calls `SeamSync.flush()`, so a tag survives the game closing mid-request and there is one
+  code path to the API rather than two that can drift.
+
 ## Design decisions already made
 
 - **Notebook opener = keybind** (default `N`), not a custom item: a client-only item is invisible to
