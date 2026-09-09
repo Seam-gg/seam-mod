@@ -373,6 +373,10 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         // text is rebuilt per frame rather than at init, the same way the project label is.
         for ((section, button) in sectionButtons) {
             button.message = Text.literal(textRenderer.trimToWidth(sectionLabel(section), button.width - 8))
+            // The open tab is inactive: it renders differently and stops accepting a click that
+            // would do nothing. Without it the only "you are here" is the keyboard focus outline,
+            // which disappears the moment focus moves anywhere else.
+            button.active = section != expanded
             button.render(context, mouseX, mouseY, delta)
         }
         drawReporterWarning(context, bodyTop - LINE - 1)
