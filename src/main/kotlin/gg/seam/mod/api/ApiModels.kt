@@ -312,3 +312,34 @@ data class WorldStorageDto(
     @SerialName("container_count") val containerCount: Int = 0,
     @SerialName("oldest_seen_at") val oldestSeenAt: String? = null,
 )
+
+// ── Is anything reading these containers? (MCO-536) ────────────────────────────
+
+/**
+ * `GET /worlds/{id}/reporter` — whether a server is reading this world's tagged containers.
+ *
+ * Tagging a chest and seeing nothing happen has two causes that look identical in game: no reporter
+ * is connected, or one is connected to a **different** Seam world. Both leave tags piling up and
+ * numbers never moving, and they have different fixes, so the notebook has to be able to tell them
+ * apart without the player opening a browser.
+ *
+ * [configured] and [connected] are separate on purpose:
+ * - neither — nobody has minted a token for this world.
+ * - configured only — a token exists but no server has ever used it.
+ * - both — a reporter has pushed, and [lastSeenAt] says whether it is *still* alive.
+ *
+ * [lastSeenAt] is the reporter **token's** last use, not a container's last reading. That
+ * distinction is the whole point: a container in an unloaded chunk is deliberately never re-read,
+ * so per-container timestamps go stale while the reporter is perfectly healthy. Never derive
+ * liveness from [ContainerTagDto.lastSeenAt] — it would tell a player nothing is watching every
+ * time they walk away from their storage room.
+ */
+@Serializable
+data class ReporterStatusDto(
+    @SerialName("configured") val configured: Boolean = false,
+    @SerialName("connected") val connected: Boolean = false,
+    @SerialName("last_seen_at") val lastSeenAt: String? = null,
+    @SerialName("reporter_version") val reporterVersion: String? = null,
+    @SerialName("server_name") val serverName: String? = null,
+    @SerialName("server_count") val serverCount: Int = 0,
+)

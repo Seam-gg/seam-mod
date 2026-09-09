@@ -121,6 +121,17 @@ class SeamApiClient(
         }
 
     /**
+     * `GET /worlds/{id}/reporter` — whether a server is reading this world's containers (MCO-536).
+     *
+     * Structure cadence, never a poll: the notebook asks when it opens. It answers "is anything
+     * watching?", which changes on the timescale of someone configuring a server, not of a sweep.
+     */
+    fun getReporterStatus(worldId: Int): CompletableFuture<ApiResult<ReporterStatusDto>> =
+        send(ReporterStatusDto.serializer()) {
+            request("/worlds/${worldId.pathSegment()}/reporter").GET().build()
+        }
+
+    /**
      * `POST /worlds/{id}/containers` — tag a position, or move the tag already there.
      *
      * Create and move are the same call, keyed on the position, so the gesture never has to ask

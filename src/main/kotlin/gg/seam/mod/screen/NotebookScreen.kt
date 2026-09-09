@@ -1,5 +1,6 @@
 package gg.seam.mod.screen
 
+import gg.seam.mod.api.ContainerTagDto
 import gg.seam.mod.api.ProjectDto
 import gg.seam.mod.api.ResourceDto
 import gg.seam.mod.api.TaskDto
@@ -9,6 +10,10 @@ import gg.seam.mod.data.SeamDataStore
 import gg.seam.mod.data.SeamSync
 import gg.seam.mod.data.SyncState
 import gg.seam.mod.data.WorldDataStore
+import gg.seam.mod.tag.ContainerTagStore
+import gg.seam.mod.tag.ContainerTarget
+import gg.seam.mod.tag.TagPos
+import gg.seam.mod.util.onClientThread
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.gui.screen.Screen
 import net.minecraft.client.gui.widget.ButtonWidget
@@ -31,6 +36,19 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
 
     private val projects get() = SeamDataStore.projects
     private val project get() = projects.getOrNull(projectIndex)
+
+    /**
+     * This project's tagged containers, ordered so a row and its button never disagree.
+     *
+     * Sorted rather than left in server order: the buttons are built once and positioned per frame
+     * by index, so an unstable order would have "Untag" on row three delete row one's chest.
+     */
+    private val containers: List<ContainerTagDto>
+        get() = project?.let { current ->
+            ContainerTagStore.tags
+                .filter { it.projectId == current.id }
+                .sortedWith(compareBy({ it.dimension }, { it.x }, { it.y }, { it.z }))
+        }.orEmpty()
 
     // panel geometry
     private var left = 0
@@ -65,6 +83,9 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
     private val batchButtons = mutableListOf<List<ButtonWidget>>()
     private val taskButtons = mutableListOf<ButtonWidget>()
 
+    /** One "Untag" per tagged container of the current project — parallel to [containers]. */
+    private val untagButtons = mutableListOf<ButtonWidget>()
+
     /**
      * Which project [batchButtons] were built for. Each button closes over its project id and item
      * id, so when a background refresh swaps the project set underneath us the buttons have to be
@@ -72,6 +93,9 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
      * and leave buttons writing counts against the previous project.
      */
     private var builtForProjectId: Int? = null
+
+    /** How many container rows the buttons were built for, so a late pull rebuilds them. */
+    private var builtForContainerCount = -1
 
     override fun init() {
         panelW = minOf(360, width - 20)
@@ -85,6 +109,10 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         // every window resize. Cheap when the token or binding is absent: refresh() short-circuits
         // to Unlinked/Unmapped without touching the network.
         SeamDataStore.refreshIfStale()
+        // Tagged containers and whether anything reads them (MCO-536). Structure cadence, not the
+        // count poll: asked when the notebook opens, never on a timer. Same stale guard, for the
+        // same reason — init() re-runs on every window resize.
+        ContainerTagStore.refreshIfStale()
 
         // ---- fixed header ----
         settingsButton = addDrawableChild(
@@ -178,7 +206,36 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
                 )
             }
         }
+        untagButtons.forEach { remove(it) }
+        untagButtons.clear()
+        builtForContainerCount = containers.size
+        for (container in containers) {
+            untagButtons += addDrawableChild(
+                ButtonWidget.builder(Text.literal("Untag")) { untag(container) }
+                    .dimensions(contentR - UNTAG_W, 0, UNTAG_W, CONTAINER_BTN).build(),
+            )
+        }
+
         recomputeContentHeight()
+    }
+
+    /**
+     * Untag from the list, without walking to the chest.
+     *
+     * The in-world gesture needs you standing in front of it, which is exactly what you cannot do
+     * for the container you have forgotten about — and a stale tag on a chest you demolished last
+     * week is the one most worth removing.
+     */
+    private fun untag(container: ContainerTagDto) {
+        val target = ContainerTarget(
+            kind = container.kind.ifBlank { "chest" },
+            dimension = container.dimension,
+            positions = listOf(TagPos(container.x, container.y, container.z)),
+        )
+        ContainerTagStore.untag(target).thenRun {
+            SeamChat.success("Untagged ${container.kind} at ${container.x},${container.y},${container.z}")
+            onClientThread { buildResourceButtons() }
+        }
     }
 
     private fun recomputeContentHeight() {
@@ -186,7 +243,10 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         contentHeight = if (current == null) {
             LINE * 4
         } else {
-            (LINE + 4) + current.resources.size * RES_ROW + GAP + (LINE + 4) + current.tasks.size * TASK_ROW
+            (LINE + 4) + current.resources.size * RES_ROW +
+                GAP + (LINE + 4) + current.tasks.size * TASK_ROW +
+                // CONTAINERS: header, the reporter line, then a row each (or one "none" line).
+                GAP + (LINE + 4) + (LINE + 4) + maxOf(1, containers.size) * CONTAINER_ROW
         }
         maxScroll = maxOf(0, contentHeight - (bodyBottom - bodyTop))
         scroll = scroll.coerceIn(0, maxScroll)
@@ -207,7 +267,11 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         // The pull completes on a background thread; rebuild the rows on the first frame after the
         // project set changes underneath us.
         if (projectIndex >= projects.size) projectIndex = 0
-        if (project?.id != builtForProjectId) buildResourceButtons()
+        // The container pull lands after init(), so the untag buttons have to be rebuilt when it
+        // does — otherwise the rows render with no buttons beside them until the next resize.
+        if (project?.id != builtForProjectId || containers.size != builtForContainerCount) {
+            buildResourceButtons()
+        }
 
         // panel + border
         context.fill(left, top, left + panelW, top + panelH, SeamPalette.PANEL)
@@ -299,6 +363,93 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
             button.render(context, mouseX, mouseY, delta)
             cy += TASK_ROW
         }
+
+        cy += GAP
+        cy = sectionHeader(context, "CONTAINERS", cy)
+        cy = drawReporterLine(context, cy)
+
+        val tagged = containers
+        if (tagged.isEmpty()) {
+            context.drawText(
+                textRenderer,
+                trim("No containers tagged for this project."),
+                contentX, cy, SeamPalette.MUTED, false,
+            )
+            cy += CONTAINER_ROW
+        }
+        tagged.forEachIndexed { i, container ->
+            drawContainer(context, container, cy)
+            untagButtons.getOrNull(i)?.let { button ->
+                button.y = cy - 3
+                button.active = cy >= bodyTop && cy + CONTAINER_BTN <= bodyBottom
+                button.render(context, mouseX, mouseY, delta)
+            }
+            cy += CONTAINER_ROW
+        }
+    }
+
+    /**
+     * The answer to "is anything actually reading these?" — the question the whole section exists
+     * for (MCO-536).
+     *
+     * Its three states have three different fixes, so they get three different sentences. The
+     * no-reporter case says plainly that counts will not update **and** that tagging still works,
+     * because otherwise the reasonable response is to stop tagging — when in fact the tags are
+     * picked up the moment a reporter arrives.
+     */
+    private fun drawReporterLine(context: DrawContext, y: Int): Int {
+        val status = ContainerTagStore.reporter
+        val (text, colour) = when {
+            status == null -> "Checking whether a server is reading these..." to SeamPalette.MUTED
+            !status.configured ->
+                "No server is reading these containers - counts will not update." to SeamPalette.RED
+            !status.connected ->
+                "${status.serverName ?: "A server"} is set up but has never connected." to SeamPalette.RED
+            else ->
+                "Read by ${status.serverName ?: "a server"}, last seen ${status.lastSeenAt.shortTime()}." to
+                    SeamPalette.GREEN
+        }
+        context.drawText(textRenderer, trim(text), contentX, y, colour, false)
+
+        // Said only where someone might otherwise conclude that tagging is pointless.
+        if (status != null && !status.connected) {
+            context.drawText(
+                textRenderer,
+                trim("Tagging still works - tags are picked up when a reporter connects."),
+                contentX, y + LINE, SeamPalette.MUTED, false,
+            )
+            return y + LINE * 2 + 4
+        }
+        return y + LINE + 4
+    }
+
+    /** One tagged container: where it is, and whether the sweep can actually read it. */
+    private fun drawContainer(context: DrawContext, container: ContainerTagDto, y: Int) {
+        context.drawText(
+            textRenderer,
+            trim("${container.x}, ${container.y}, ${container.z}  ${container.kind.pretty()}"),
+            contentX, y, SeamPalette.INK, false,
+        )
+
+        // `missing` and `unreadable` make a count wrong rather than merely stale, so they are
+        // coloured and not just worded — someone scanning the list should find the broken ones
+        // without reading every row.
+        val (state, colour) = when (container.state) {
+            "ok" -> "seen ${container.lastSeenAt.shortTime()}" to SeamPalette.MUTED
+            "missing" -> "gone - not counted" to SeamPalette.RED
+            else -> "never read" to SeamPalette.LAPIS
+        }
+        context.drawText(
+            textRenderer,
+            textRenderer.trimToWidth(state, contentR - contentX - UNTAG_W - 6),
+            contentX, y + LINE, colour, false,
+        )
+    }
+
+    /** An ISO-8601 instant is not readable at a glance; the clock time is. */
+    private fun String?.shortTime(): String {
+        if (this.isNullOrBlank()) return "never"
+        return substringAfter('T').take(5).ifBlank { this }
     }
 
     /** Body for every state that has no project to show — each with the action that fixes it. */
@@ -468,6 +619,9 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         val BATCH_DELTAS = intArrayOf(-1, -64, 1, 64, 1728)
         const val RES_ROW = 34 // TOP_H (13) + BATCH_BTN (16) + trailing pad
         const val TASK_ROW = 22
+        const val CONTAINER_ROW = 22
+        const val CONTAINER_BTN = 16
+        const val UNTAG_W = 44
         const val GAP = 6
         const val FOOTER_H = 26
         const val CLOSE_W = 78
