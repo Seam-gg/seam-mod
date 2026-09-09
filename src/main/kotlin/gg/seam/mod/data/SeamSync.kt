@@ -151,6 +151,16 @@ object SeamSync {
 
         return chain.thenApply { result ->
             commit(result)
+            // A queued tag reaching Seam was completely silent: `ContainerTagStore` logs when you
+            // MAKE a tag and this class logs when one is REJECTED, so the successful case — the
+            // one the offline queue exists to produce — left no trace at all. Silent success reads
+            // exactly like a lost tag, and there is no way to tell them apart from inside the game.
+            if (result.syncedContainerTags.isNotEmpty()) {
+                SeamClient.logger.info(
+                    "Sent {} queued container tag(s) to Seam",
+                    result.syncedContainerTags.size,
+                )
+            }
             state = if (result.failure != null) SyncState.Failed(result.failure) else SyncState.Synced(now())
             result
         }.whenComplete { _, _ -> inFlight.set(false) }
