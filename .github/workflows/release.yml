@@ -38,20 +38,20 @@ jobs:
       changelog: ${{ steps.changelog.outputs.body }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
           # Annotated tag objects (and their messages) only come down with the full fetch.
           fetch-depth: 0
 
-      - uses: gradle/actions/wrapper-validation@v5
+      - uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           java-version: '21'
           distribution: temurin
 
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
         with:
           cache-read-only: true
 
@@ -113,7 +113,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload build output
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-jars
           path: build/libs/*.jar
@@ -152,13 +152,13 @@ jobs:
     permissions:
       contents: write   # mc-publish creates the GitHub release
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: release-jars
           path: artifacts
 
       - name: Publish to Modrinth and GitHub
-        uses: Kir-Antipov/mc-publish@v3.3
+        uses: Kir-Antipov/mc-publish@52307b03863581dec6b652b83e597aec02ebb075 # v3.3.1
         with:
           # Slug rather than the project id — both are accepted. Swap to the id if the slug ever
           # changes; ids are immutable.

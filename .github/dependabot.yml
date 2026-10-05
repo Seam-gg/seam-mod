@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # GitHub Actions only, on purpose. The mod's real dependencies are Minecraft,
+  # Yarn, Fabric Loader, Fabric API and fabric-language-kotlin, and they live in
+  # gradle.properties, which Dependabot does not read. They also move as one set
+  # tied to a Minecraft version (see the comments there), so they are bumped
+  # deliberately, never one at a time. What Dependabot could see in
+  # build.gradle.kts is the Kotlin plugin, which must match the Kotlin that
+  # fabric-language-kotlin bundles, and Loom, which follows the Fabric toolchain.
+  # A bump PR for either would be wrong more often than right.
+  #
+  # Security advisories still reach the repo: Dependabot alerts are enabled.
+
+  # Actions are pinned to full commit SHAs with the version in a trailing comment,
+  # as in mc-org and seam-server-dashboard: a tag can be repointed, and the
+  # release job publishes to Modrinth with the repo's token. Dependabot bumps the
+  # SHA and the comment together. Keep new actions pinned.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
