@@ -54,8 +54,8 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
 - **Singleplayer runs the same code.** `main` also fires in singleplayer's integrated server, which is
   what makes SP and MP one code path instead of two implementations. Exercise the server half in SP
   against a local webapp before the jar goes near a real server — **`docs/testing-the-reporter.md`**
-  is the walkthrough, including the bit that is not built yet: there is no in-game tagging gesture
-  until MCO-261 (Phase C), so tags come from `scripts/seam-tag.sh`.
+  is the walkthrough. Tags come from the in-game gesture (§ Tagging) or, scripted and in bulk, from
+  `scripts/seam-tag.sh`.
 - **One sweep pass per `sweep_seconds`, and the push happens when the pass ends.** Not a read every
   tick — that burns ticks producing readings nobody sends — and not a push on its own timer, which
   would carry a mix of readings minutes apart. A changed tag list starts a pass immediately, so a
@@ -65,7 +65,9 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
   `HashMap` written from two threads does not go slightly stale, it corrupts or spins. See
   `docs/fabric-1.21.11-reference.md` §9.
 - **Config is `config/seam-notebook-server.json`**, read once at server start (`api_base_url`,
-  `seam_world_id`, `token`, `sweep_seconds`, `reads_per_tick`). Absent or tokenless → **one INFO line
+  `seam_world_id`, `token`, `sweep_seconds`, `reads_per_tick`). **`/seam connect` writes it** and
+  starts the reporter live (`SeamCommand`), so no doc should tell an operator to hand-edit the file
+  and restart. Absent or tokenless → **one INFO line
   and do nothing.** A server that installs the jar without configuring it is a supported state, not an
   error, and must not warn every tick. A malformed file is a logged error with defaults, not a crash.
 - **The reporter authenticates as itself**, with a world-scoped least-privilege **reporter token**
@@ -115,8 +117,11 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
 
 ## Design decisions already made
 
-- **Notebook opener = keybind** (default `N`), not a custom item: a client-only item is invisible to
-  the multiplayer server we run. The crafted `seam:notebook` item comes later.
+- **Notebook opener = keybind** (default `N`), not a custom item. The crafted `seam:notebook` item
+  is deferred to its own issue. Its original blocker — a client-only item is invisible to the
+  multiplayer server — expired when v0.3.0 shipped a `main` entrypoint, but registering an item
+  gives up the "no blocks, items or packets" property above. **Verify Fabric registry sync against
+  a vanilla client before committing to one.**
 - **Container tags live in the webapp** (MCO-530), not in a client-local per-world file: a client-local
   tag is invisible to the thing that reads the chest, and webapp-side is also what makes tags *shared*.
 - **Containers are read by the server half, not approximated from the client.** The **sweep** (MCO-260)
