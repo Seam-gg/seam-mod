@@ -3,10 +3,10 @@
 The Phase B reporter (MCO-534, MCO-260, MCO-535) reads tagged containers and pushes what it finds
 to mc-org. This is how to watch that happen end to end.
 
-**The one thing that is not built yet:** tagging a chest from inside Minecraft. That gesture is
-MCO-261, in Phase C. Until it lands, tags are created from a terminal with
-[`scripts/seam-tag.sh`](../scripts/seam-tag.sh) — the same `/api/v1` endpoints the gesture will
-call. Everything else below is the real thing.
+Tags can be made in-game (empty hand + sneak + right-click a container, or the tag keybind —
+MCO-261). This walkthrough uses [`scripts/seam-tag.sh`](../scripts/seam-tag.sh) instead, because it
+is repeatable and can tag a hundred containers at once; it calls the same `/api/v1` endpoints the
+gesture does. *(Said the gesture was "not built yet" until Phase C merged.)*
 
 ## 0. A webapp to talk to
 

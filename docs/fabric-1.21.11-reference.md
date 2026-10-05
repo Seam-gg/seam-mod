@@ -194,10 +194,10 @@ So the constraint is unchanged and the mitigation is inverted: **do not** reach 
 
 | # | Decision / risk | Recommendation |
 |---|---|---|
-| D1 | Notebook opener: crafted item vs keybind | ✅ **DECIDED: keybind for v1** (client item invisible to the MP server we run); add the crafted `seam:notebook` item later when a registration approach is chosen |
-| D2 | Container snapshots barely work on MP | **Gather-mode first**; container-snapshot is SP-first; server-side scan = future **script** |
+| D1 | Notebook opener: crafted item vs keybind | ✅ **DECIDED: keybind.** The item is deferred to its own issue. Its blocker (client item invisible to the MP server) expired with the server half in v0.3.0; the new cost is registering an entry at all — verify registry sync against a vanilla client first |
+| D2 | Container snapshots barely work on MP | ✅ **DECIDED: the server half reads tagged containers** (§9). *(Was "gather-mode first, server-side scan = future script" until 2026-09-08; gather mode is cancelled, MCO-262.)* |
 | D3 | Floating-label rendering (H1) | Prototype in a throwaway world before design lock; validate flush/scale/accessors live |
-| D4 | Backend prerequisites | **MCO-235 (JSON API)** + **MCO-236 (device-code auth)** must land before any sync; they're mc-org work (worktree-first) |
+| D4 | Backend prerequisites | ✅ Landed — MCO-235 (JSON API) + MCO-236 (device-code auth) shipped in mc-org; see CLAUDE.md § Backend |
 | D5 | GUI textures/fonts | v1 = `fill` + text + vanilla widgets + vanilla font; defer custom art |
 | D6 | Verify all ⚠ signatures | Stand up the dev env early; let the compiler + a smoke world confirm the 1.21.11 build |
 

@@ -1,10 +1,11 @@
 # Seam Notebook (Minecraft mod)
 
-Client-side Fabric mod that bridges in-game resource tracking with the [Seam](https://app.seam.gg)
-webapp: inventory logging, container tagging, resource reconciliation, and task check-off.
+Fabric mod that bridges in-game resource tracking with the [Seam](https://app.seam.gg) webapp:
+container tagging, resource reconciliation, and task check-off.
 
 - **Loader:** Fabric · **Minecraft:** 1.21.11 · **Language:** Kotlin (fabric-language-kotlin)
-- **Distribution:** client-only (v1); multiplayer is supported but degraded (see reference doc)
+- **Distribution:** one jar, two halves (since 0.3.0) — the notebook on the client, and an optional
+  reporter on the server that reads tagged containers. Either side runs without the other.
 - **Mod id:** `seam_notebook` · **Modrinth:** [`seam-notebook`](https://modrinth.com/mod/seam-notebook)
 
 ## Develop
@@ -98,6 +99,7 @@ the version bump, the changelog format, and the tag push.
 
 - **`docs/fabric-1.21.11-reference.md`** — version-correct Fabric 1.21.11 API reference and the
   version-churn hazard map. Read it before touching rendering, GUI, item, or event code.
-- **`docs/v1-spec.md`** — the v1 product specification (drop the canonical file here).
+- **`docs/testing-the-reporter.md`** — watching the server half push readings, end to end.
+- **`docs/v1-spec.md`** — the originating v1 spec. Historical; parts are superseded.
 
 Tracked in Linear under the **Seam Companion Mod** project (team `Mcorg`).
