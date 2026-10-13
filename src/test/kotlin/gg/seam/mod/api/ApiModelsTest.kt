@@ -83,6 +83,18 @@ class ApiModelsTest {
         // source_type is nullable on the wire and omitted here.
         assertNull(project.resources[1].sourceType)
         assertTrue(project.tasks.single().completed)
+        // storage_tracked is absent here, as from a server older than the field: counters stay on.
+        assertFalse(project.storageTracked)
+    }
+
+    @Test
+    fun `a project that follows its chests says so`() {
+        val project = json.decodeFromString(
+            ProjectDto.serializer(),
+            """{"id":7,"name":"Iron Farm","stage":"GATHERING","state":"IN_PROGRESS","storage_tracked":true}""",
+        )
+
+        assertTrue(project.storageTracked)
     }
 
     @Test

@@ -103,6 +103,12 @@ data class ProjectDto(
     @SerialName("state") val state: String,
     @SerialName("resources") val resources: List<ResourceDto> = emptyList(),
     @SerialName("tasks") val tasks: List<TaskDto> = emptyList(),
+    /**
+     * The counts follow the project's tagged chests (MCO-540): `resources/sync` answers 409, so the
+     * notebook offers no counters. Defaults to false so a server older than the field reads as
+     * before.
+     */
+    @SerialName("storage_tracked") val storageTracked: Boolean = false,
 )
 
 // ── Sync (absolute set) ────────────────────────────────────────────────────────
