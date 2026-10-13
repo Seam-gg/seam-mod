@@ -95,6 +95,13 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
     private var builtForProjectId: Int? = null
 
     /**
+     * Whether [batchButtons] were built for a project that follows its chests. Switching *Count
+     * from chests* in the web app keeps the project id, so the id alone would leave counters on a
+     * project the server now refuses counts for.
+     */
+    private var builtForTracked = false
+
+    /**
      * The notebook's three sections, one open at a time.
      *
      * An accordion rather than a tab strip, and rather than one long scroll. The long scroll was
@@ -202,7 +209,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         val current = project
         return when (section) {
             Section.RESOURCES -> {
-                val done = current?.resources?.count { displayedCount(current.id, it) >= it.required } ?: 0
+                val done = current?.resources?.count { displayedCount(current, it) >= it.required } ?: 0
                 "Resources ${done}/${current?.resources?.size ?: 0}"
             }
             Section.TASKS -> {
@@ -244,6 +251,7 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
 
         val current = project
         builtForProjectId = current?.id
+        builtForTracked = current?.storageTracked == true
         if (current == null) {
             recomputeContentHeight()
             return
@@ -262,8 +270,10 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
             )
         }
 
-        current.resources.forEach { resource ->
-            val displayed = { displayedCount(current.id, resource) }
+        // No counters on a project that follows its chests: the server refuses a typed count there,
+        // and the next sweep would overwrite one anyway.
+        if (!current.storageTracked) current.resources.forEach { resource ->
+            val displayed = { displayedCount(current, resource) }
             val widths = IntArray(BATCH_DELTAS.size) { textRenderer.getWidth(batchLabel(BATCH_DELTAS[it])) + BTN_PAD_X * 2 }
             val xs = IntArray(BATCH_DELTAS.size)
             xs[0] = contentX + 8
@@ -322,7 +332,9 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
             LINE * 4
         } else {
             when (expanded) {
-                Section.RESOURCES -> maxOf(1, current.resources.size) * RES_ROW
+                Section.RESOURCES ->
+                    if (current.storageTracked) TRACKED_NOTE_H + maxOf(1, current.resources.size) * TRACKED_ROW
+                    else maxOf(1, current.resources.size) * RES_ROW
                 Section.TASKS -> maxOf(1, current.tasks.size) * TASK_ROW
                 // Two lines for the reporter sentence, which wraps to a second when disconnected.
                 Section.CONTAINERS -> (LINE * 2 + 4) + maxOf(1, containers.size) * CONTAINER_ROW
@@ -349,7 +361,10 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         if (projectIndex >= projects.size) projectIndex = 0
         // The container pull lands after init(), so the untag buttons have to be rebuilt when it
         // does — otherwise the rows render with no buttons beside them until the next resize.
-        if (project?.id != builtForProjectId || containers.size != builtForContainerCount) {
+        if (project?.id != builtForProjectId ||
+            (project?.storageTracked == true) != builtForTracked ||
+            containers.size != builtForContainerCount
+        ) {
             buildResourceButtons()
         }
 
@@ -438,18 +453,29 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         var cy = bodyTop - scroll
         when (expanded) {
             Section.RESOURCES -> {
+                if (current.storageTracked) {
+                    // Says why the counters are gone and where the switch is, so their absence
+                    // reads as a setting rather than as the notebook having broken.
+                    context.drawText(
+                        textRenderer,
+                        trim("Counted from chests - set in Seam project settings."),
+                        contentX, cy, SeamPalette.MUTED, false,
+                    )
+                    cy += TRACKED_NOTE_H
+                }
                 if (current.resources.isEmpty()) {
                     context.drawText(textRenderer, "No resources tracked yet.", contentX, cy, SeamPalette.MUTED, false)
                 }
+                val rowH = if (current.storageTracked) TRACKED_ROW else RES_ROW
                 current.resources.forEachIndexed { i, resource ->
-                    drawResource(context, current.id, resource, cy)
-                    val visible = cy >= bodyTop && cy + RES_ROW <= bodyBottom
+                    drawResource(context, current, resource, cy)
+                    val visible = cy >= bodyTop && cy + rowH <= bodyBottom
                     batchButtons.getOrNull(i)?.forEach { button ->
                         button.y = cy + TOP_H
                         button.active = visible
                         button.render(context, mouseX, mouseY, delta)
                     }
-                    cy += RES_ROW
+                    cy += rowH
                 }
             }
 
@@ -614,9 +640,14 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
      * otherwise Seam's number. Local entries are cleared once they reach the server, so this falls
      * back to the authoritative value on its own — and a later edit in the web app isn't shadowed
      * by a stale local copy. (Reconciling *scanned* counts is still MCO-263.)
+     *
+     * A project that follows its chests shows Seam's number only. An edit queued before the switch
+     * is one the server will refuse, and showing it until the next flush drops it would put a
+     * number on screen that no chest holds.
      */
-    private fun displayedCount(projectId: Int, resource: ResourceDto): Int =
-        WorldDataStore.current.resourceCounts[projectId]?.get(resource.itemId) ?: resource.collected
+    private fun displayedCount(project: ProjectDto, resource: ResourceDto): Int =
+        if (project.storageTracked) resource.collected
+        else WorldDataStore.current.resourceCounts[project.id]?.get(resource.itemId) ?: resource.collected
 
     /** Optimistic completion: a queued toggle outranks the server's state until it's pushed. */
     private fun completedOf(projectId: Int, task: TaskDto): Boolean =
@@ -627,8 +658,8 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         return textRenderer.trimToWidth(mark + task.name, contentR - contentX - 8)
     }
 
-    private fun drawResource(context: DrawContext, projectId: Int, resource: ResourceDto, y: Int) {
-        val have = displayedCount(projectId, resource)
+    private fun drawResource(context: DrawContext, project: ProjectDto, resource: ResourceDto, y: Int) {
+        val have = displayedCount(project, resource)
         val complete = have >= resource.required
         val progress = if (resource.required == 0) 1f else (have.toFloat() / resource.required).coerceIn(0f, 1f)
         // Top line: name (left), bar, count (right) share a vertical center within TOP_H so the 6px
@@ -727,6 +758,8 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         const val BTN_GAP = 3 // gap between adjacent batch buttons
         val BATCH_DELTAS = intArrayOf(-1, -64, 1, 64, 1728)
         const val RES_ROW = 34 // TOP_H (13) + BATCH_BTN (16) + trailing pad
+        const val TRACKED_ROW = 18 // TOP_H (13) + trailing pad: a row with no counters under it
+        const val TRACKED_NOTE_H = LINE + 4
         const val TASK_ROW = 22
         const val CONTAINER_ROW = 14
         const val CONTAINER_BTN = 16

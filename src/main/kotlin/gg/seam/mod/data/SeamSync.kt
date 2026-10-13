@@ -21,6 +21,11 @@ data class TaskRef(val projectId: Int, val taskId: Int)
  */
 data class FlushResult(
     val syncedProjects: Set<Int> = emptySet(),
+    /**
+     * Projects whose counts the server refused permanently — today, a project whose counts follow
+     * its tagged chests (409). De-queued like a success, but not one.
+     */
+    val rejectedProjects: Set<Int> = emptySet(),
     val syncedTasks: List<TaskRef> = emptyList(),
     /** Keys of container-tag intents that reached Seam (MCO-261). */
     val syncedContainerTags: List<String> = emptyList(),
@@ -29,7 +34,24 @@ data class FlushResult(
     val failure: String? = null,
 ) {
     val pushed: Int
-        get() = syncedProjects.size + syncedTasks.size + syncedContainerTags.size + rejectedContainerTags.size
+        get() = syncedProjects.size + rejectedProjects.size + syncedTasks.size +
+            syncedContainerTags.size + rejectedContainerTags.size
+
+    /**
+     * [data] with everything this flush settled taken off the queue. Counts are dropped entirely,
+     * not just de-queued: Seam now holds the same values — or, for a refused project, the only
+     * values it will accept — so the notebook falls back to reading them from the server and a
+     * stale local copy can't shadow them.
+     */
+    fun applyTo(data: WorldData): WorldData {
+        var next = data
+        syncedProjects.forEach { next = next.withProjectReset(it) }
+        rejectedProjects.forEach { next = next.withProjectReset(it) }
+        syncedTasks.forEach { next = next.withoutPendingTask(it.projectId, it.taskId) }
+        syncedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
+        rejectedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
+        return next
+    }
 }
 
 /** Where the last push got to. The notebook footer renders this next to the queued-writes count. */
@@ -88,7 +110,20 @@ object SeamSync {
                 client.syncResources(projectId, items).thenApply { result ->
                     when (result) {
                         is ApiResult.Ok -> acc.copy(syncedProjects = acc.syncedProjects + projectId)
-                        else -> acc.copy(failure = result.describe())
+                        is ApiResult.Error ->
+                            if (isPermanent(result.status)) {
+                                // A 409 is a project whose counts follow its tagged chests: the
+                                // server takes no typed count for it, now or on any retry. Kept
+                                // queued, it would wedge everything behind it, as a tag would.
+                                SeamClient.logger.warn(
+                                    "Seam refused the counts for project {} and they have been dropped: {}",
+                                    projectId, result.describe(),
+                                )
+                                acc.copy(rejectedProjects = acc.rejectedProjects + projectId)
+                            } else {
+                                acc.copy(failure = result.describe())
+                            }
+                        is ApiResult.Failure -> acc.copy(failure = result.describe())
                     }
                 }
             }
@@ -171,11 +206,12 @@ object SeamSync {
      * retried forever.
      *
      * A **401 is deliberately retryable**: the token expired, the player re-links, and the queue
-     * then flushes — dropping their tags on the way would be the wrong answer to a fixable problem.
-     * So are 408 and 429, which are explicitly "try later". Everything else in the 4xx range is the
-     * server saying this request is wrong, and it will still be wrong next time — a 404 because the
-     * container was untagged in the web app (the intent is already satisfied), a 400 or 403 because
-     * the request or the caller is not acceptable and no amount of waiting changes that.
+     * then flushes — dropping their tags or counts on the way would be the wrong answer to a fixable
+     * problem. So are 408 and 429, which are explicitly "try later". Everything else in the 4xx
+     * range is the server saying this request is wrong, and it will still be wrong next time — a
+     * 404 because the container was untagged in the web app (the intent is already satisfied), a
+     * 409 because the project's counts follow its chests, a 400 or 403 because the request or the
+     * caller is not acceptable and no amount of waiting changes that.
      */
     private fun isPermanent(status: Int): Boolean =
         status in 400..499 && status != 401 && status != 408 && status != 429
@@ -205,21 +241,10 @@ object SeamSync {
         else -> CompletableFuture.completedFuture(ApiResult.Ok(OkResponse()))
     }
 
-    /**
-     * Clear the successfully pushed entries. Counts are dropped entirely, not just de-queued: Seam
-     * now holds the same values, so the notebook can fall back to reading them from the server and
-     * a later edit made in the web app won't be shadowed by a stale local copy.
-     */
+    /** Clear what the flush settled. See [FlushResult.applyTo]. */
     private fun applyToStore(result: FlushResult) {
         if (result.pushed == 0) return
-        WorldDataStore.update { data ->
-            var next = data
-            result.syncedProjects.forEach { next = next.withProjectReset(it) }
-            result.syncedTasks.forEach { next = next.withoutPendingTask(it.projectId, it.taskId) }
-            result.syncedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
-            result.rejectedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
-            next
-        }
+        WorldDataStore.update(result::applyTo)
     }
 
     /** Reset on disconnect — the queue lives on disk per world, this is only the last-push status. */

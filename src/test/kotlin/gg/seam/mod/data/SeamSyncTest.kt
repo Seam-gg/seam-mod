@@ -27,6 +27,8 @@ class SeamSyncTest {
 
     private var responseStatus = 200
     private var responseBody = """{"resources":[]}"""
+    /** Per-path status and body, for a flush where one call fails and the next lands. */
+    private val responseByPath = mutableMapOf<String, Pair<Int, String>>()
     private val requests = mutableListOf<Pair<String, String>>() // method+path to body
 
     private fun client() = SeamApiClient(baseUrl = { baseUrl }, token = { "test-token" })
@@ -46,9 +48,10 @@ class SeamSyncTest {
     private fun respond(exchange: HttpExchange) {
         val body = exchange.requestBody.readBytes().toString(StandardCharsets.UTF_8)
         requests += "${exchange.requestMethod} ${exchange.requestURI.path}" to body
-        val bytes = responseBody.toByteArray(StandardCharsets.UTF_8)
+        val (status, text) = responseByPath[exchange.requestURI.path] ?: (responseStatus to responseBody)
+        val bytes = text.toByteArray(StandardCharsets.UTF_8)
         exchange.responseHeaders.add("Content-Type", "application/json")
-        exchange.sendResponseHeaders(responseStatus, bytes.size.toLong())
+        exchange.sendResponseHeaders(status, bytes.size.toLong())
         exchange.responseBody.use { it.write(bytes) }
     }
 
@@ -57,14 +60,7 @@ class SeamSyncTest {
         val result = SeamSync.flush(
             client = client,
             data = data,
-            commit = { r ->
-                var next = data
-                r.syncedProjects.forEach { next = next.withProjectReset(it) }
-                r.syncedTasks.forEach { next = next.withoutPendingTask(it.projectId, it.taskId) }
-                r.syncedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
-                r.rejectedContainerTags.forEach { next = next.withoutPendingContainerTag(it) }
-                committed = next
-            },
+            commit = { r -> committed = r.applyTo(data) },
             now = { 42L },
         ).get(10, TimeUnit.SECONDS)
         return result to committed
@@ -156,6 +152,52 @@ class SeamSyncTest {
         assertNull(result.failure, "a 404 must not wedge the queue")
         assertEquals(listOf(TaskRef(4, 9)), result.syncedTasks)
         assertEquals(0, committed!!.queuedWrites)
+    }
+
+    @Test
+    fun `counts for a project that follows its chests are dropped, and the rest of the queue still lands`() {
+        responseByPath["/api/v1/projects/5/resources/sync"] =
+            409 to """{"error":"storage_tracked","message":"This project's counts follow its tagged chests"}"""
+        responseBody = """{"id":9,"name":"Dig","completed":true}"""
+        val data = WorldData(seamWorldId = 1)
+            .withCount(5, "minecraft:iron_ingot", 128)
+            .withPendingTask(4, 9, completed = true)
+
+        val (result, committed) = flush(data)
+
+        // The server will refuse this count every time, so keeping it queued would wedge every
+        // write behind it for good. The toggle after it is the proof the chain kept going.
+        assertNull(result.failure, "a 409 must not wedge the queue")
+        assertEquals(setOf(5), result.rejectedProjects)
+        assertTrue(result.syncedProjects.isEmpty(), "a refused count was reported as synced")
+        assertEquals(listOf(TaskRef(4, 9)), result.syncedTasks)
+        assertEquals(
+            listOf("POST /api/v1/projects/5/resources/sync", "PUT /api/v1/projects/4/tasks/9"),
+            requests.map { it.first },
+        )
+        assertEquals(0, committed!!.queuedWrites)
+        assertTrue(committed.resourceCounts.isEmpty(), "the refused count still shadows the server's")
+    }
+
+    @Test
+    fun `counts refused for a reason that passes are kept for the next attempt`() {
+        // 401: re-linking fixes it. 408 and 429: the server says try later. Dropping the player's
+        // counts on any of these would lose work to a problem that goes away on its own.
+        for (status in listOf(401, 408, 429)) {
+            requests.clear()
+            responseStatus = status
+            responseBody = """{"error":"http_$status"}"""
+            val data = WorldData(seamWorldId = 1)
+                .withCount(5, "minecraft:iron_ingot", 128)
+                .withPendingTask(4, 9, completed = true)
+
+            val (result, committed) = flush(data)
+
+            assertIs<String>(result.failure, "status $status")
+            assertTrue(result.rejectedProjects.isEmpty(), "status $status dropped the counts")
+            assertEquals(1, requests.size, "status $status did not stop the flush")
+            assertEquals(2, (committed ?: data).queuedWrites, "status $status")
+        }
     }
 
     @Test
