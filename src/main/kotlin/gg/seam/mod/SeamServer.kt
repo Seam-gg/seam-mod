@@ -3,8 +3,10 @@ package gg.seam.mod
 import gg.seam.mod.storage.Reporter
 import gg.seam.mod.storage.ReporterConfig
 import gg.seam.mod.storage.SeamCommand
+import gg.seam.mod.storage.ShulkerStamp
 import net.fabricmc.api.ModInitializer
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
+import net.fabricmc.fabric.api.loot.v3.LootTableEvents
 import org.slf4j.LoggerFactory
 
 /**
@@ -17,7 +19,8 @@ import org.slf4j.LoggerFactory
  *
  * The two halves of this mod never speak to each other. No custom packets, no blocks, no items — so
  * a client without the mod can join a server with it and vice versa, and there is no compatibility
- * matrix to maintain. They meet in mc-org.
+ * matrix to maintain. They meet in mc-org. (The server half does stamp tagged shulker boxes with a
+ * vanilla `custom_data` component as they drop; that registers nothing, so the same holds.)
  *
  * ⚠ Everything under `gg.seam.mod.storage` must stay free of `MinecraftClient`, or it will not
  * class-load here.
@@ -46,5 +49,12 @@ object SeamServer : ModInitializer {
         // The reporter reads a bounded number of containers here and does its HTTP off-thread; this
         // is a no-op while it is off.
         ServerTickEvents.END_SERVER_TICK.register { server -> Reporter.tick(server) }
+
+        // A tagged shulker box keeps its tag when it is picked up, so carrying it to the build does
+        // not read as the stock vanishing. See ShulkerStamp for why this is the drop and not the
+        // placed block.
+        LootTableEvents.MODIFY_DROPS.register { _, context, drops ->
+            ShulkerStamp.onDrops(context, drops, Reporter::taggedShulkerAt)
+        }
     }
 }

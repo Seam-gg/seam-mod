@@ -43,7 +43,9 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
 - **Packaging.** `environment: "*"`, a `main` entrypoint `gg.seam.mod.SeamServer`, `client` entrypoint
   untouched. The mod registers **no blocks, items or packets**, so a client without it can join a
   server with it and vice versa. There is no compatibility matrix to maintain, deliberately: **the two
-  halves never speak to each other — they meet in mc-org.**
+  halves never speak to each other — they meet in mc-org.** The server half does write one thing
+  into the world: a vanilla `minecraft:custom_data` stamp on a tagged shulker box as it drops (see
+  § Design decisions). A vanilla component registers nothing, so the property above holds.
 - **`gg.seam.mod.storage` must not reference `MinecraftClient`.** Anywhere. It depends only on
   `net.minecraft.server.*` and the existing API client. A stray client reference will not class-load on
   a dedicated server — the one mistake here that fails loudly and late, and it fails on somebody
@@ -134,6 +136,17 @@ Built by **MCO-534** (packaging), **MCO-260** (the sweep) and **MCO-535** (the p
   `ClientPlayNetworkHandler.onItemPickupAnimation` mixin — as the reliable multiplayer path, until
   2026-09-08. Gather mode is **cancelled** as a counting mechanism (MCO-262): the count is what is in
   tagged containers, and nothing else.)*
+- **A tagged shulker box that is picked up stays counted** (MCO-548), as `in_transit`, from what is
+  in it *now*, naming the player who has it. A shulker box is the one container whose contents
+  travel with it, so "nothing at the position" meant "being carried to the build", not "gone" — and
+  zeroing it was wrong at exactly the moment someone was watching the count. `ShulkerStamp` stamps
+  the tag id onto the box **as it drops** (`LootTableEvents.MODIFY_DROPS`; the vanilla loot table
+  would drop a stamp put on the placed block), and each pass looks for stamped boxes in online
+  players' inventories. `CarriedShulkers` is the rule: carrier offline → say nothing, since an
+  offline inventory cannot change any more than an unloaded chunk can; carrier online without it →
+  `missing`. That is the whole of player-inventory counting: **tagged shulker boxes only, and not
+  the ender chest.** The carrier comes back from the webapp's tag list, so a restart does not
+  mistake "logged off" for "lost it".
 - **HTTP = JDK `java.net.http.HttpClient`** (no ktor). **JSON = kotlinx-serialization** (provided by FLK
   at runtime — `compileOnly`, never bundle). Marshal results back to the client thread with
   `MinecraftClient.getInstance().execute { }` — on the **client half only**. Server-half code has no

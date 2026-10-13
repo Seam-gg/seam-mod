@@ -142,8 +142,9 @@ data class TaskUpdateRequest(
  * [groupKey] is shared by both halves of a double chest (the position, `"x,y,z"`, otherwise) — the
  * sweep dedupes on it so a joined chest is not counted twice. [lastSeenAt] and [state] are written
  * only by the server half: `unreadable` until a sweep has read the position, then `ok`, or
- * `missing` once the block is gone. Timestamps are ISO-8601 instants, kept as strings because the
- * mod only displays them.
+ * `missing` once the block is gone, or `in_transit` while a tagged shulker box is on a player —
+ * who [carriedBy] names. Timestamps are ISO-8601 instants, kept as strings because the mod only
+ * displays them.
  */
 @Serializable
 data class ContainerTagDto(
@@ -159,6 +160,18 @@ data class ContainerTagDto(
     @SerialName("tagged_at") val taggedAt: String = "",
     @SerialName("last_seen_at") val lastSeenAt: String? = null,
     @SerialName("state") val state: String = "unreadable",
+    @SerialName("carried_by") val carriedBy: CarrierDto? = null,
+)
+
+/**
+ * The player carrying an `in_transit` shulker box. [name] is what people looking for the stock
+ * need; [uuid] is what survives a rename, and is how the reporter recognises the carrier again
+ * after a restart.
+ */
+@Serializable
+data class CarrierDto(
+    @SerialName("uuid") val uuid: String,
+    @SerialName("name") val name: String,
 )
 
 /**
@@ -250,9 +263,10 @@ data class ReportedItemDto(
 /**
  * One container as the sweep found it.
  *
- * [state] is `ok`, `unreadable` (the chunk has not been loaded since tagging) or `missing` (the
- * block is gone). Only `ok` should carry [items]; the other two mean "do not count this", and the
- * webapp drops whatever it held.
+ * [state] is `ok`, `unreadable` (the chunk has not been loaded since tagging), `missing` (the
+ * block is gone) or `in_transit` (a tagged shulker box a player picked up, its contents travelling
+ * with it). `ok` and `in_transit` carry [items] and count; the other two mean "do not count this",
+ * and the webapp drops whatever it held. [carriedBy] is set only for `in_transit`.
  */
 @Serializable
 data class ReportedContainerDto(
@@ -260,6 +274,7 @@ data class ReportedContainerDto(
     @SerialName("state") val state: String,
     @SerialName("seen_at") val seenAt: String,
     @SerialName("items") val items: List<ReportedItemDto> = emptyList(),
+    @SerialName("carried_by") val carriedBy: CarrierDto? = null,
 )
 
 /**

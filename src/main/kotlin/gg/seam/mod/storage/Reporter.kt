@@ -2,6 +2,7 @@ package gg.seam.mod.storage
 
 import gg.seam.mod.api.SeamApiClient
 import net.minecraft.server.MinecraftServer
+import net.minecraft.util.math.BlockPos
 import org.slf4j.Logger
 
 /**
@@ -57,4 +58,8 @@ object Reporter {
     fun tick(server: MinecraftServer) {
         service?.tick(server)
     }
+
+    /** The tagged shulker box at a position, or null — including while the reporter is off. */
+    fun taggedShulkerAt(dimension: String, pos: BlockPos): Long? =
+        service?.taggedShulkerAt(dimension, pos)
 }
