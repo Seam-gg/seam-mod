@@ -1,12 +1,14 @@
 package gg.seam.mod.storage
 
 import gg.seam.mod.api.ApiResult
+import gg.seam.mod.api.CarrierDto
 import gg.seam.mod.api.describe
 import gg.seam.mod.api.ReportedContainerDto
 import gg.seam.mod.api.ReportedItemDto
 import gg.seam.mod.api.ReporterContentsRequest
 import gg.seam.mod.api.SeamApiClient
 import net.minecraft.server.MinecraftServer
+import net.minecraft.util.math.BlockPos
 import org.slf4j.Logger
 import java.time.Instant
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -33,7 +35,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   a concurrent resize corrupts the map or spins.
  * - **The push carries only what changed** against the last *confirmed* push, so a failure re-sends
  *   rather than silently dropping a change. It is otherwise stateless — a restart re-pushes
- *   everything once, which is why there is no resync protocol and nothing persisted here.
+ *   everything once, which is why there is no resync protocol and nothing persisted here. The one
+ *   thing a restart would otherwise forget, who is carrying a tagged shulker box, comes back from
+ *   the webapp with the tag list ([rememberedCarriers]).
  */
 class ReporterService(
     private val config: ReporterConfig,
@@ -56,6 +60,12 @@ class ReporterService(
 
     private var tags: List<TaggedContainer> = emptyList()
     private var interest: Map<Int, Set<String>> = emptyMap()
+
+    /**
+     * Who the webapp says is carrying each `in_transit` shulker box. Consulted only for a box this
+     * reporter has not read since it started — once it has, [pending] knows better.
+     */
+    private var rememberedCarriers: Map<Long, Carrier> = emptyMap()
 
     /** Tags split into physical inventories — see [ContainerSweep.groupsOf]. A pass walks these. */
     private var groups: List<List<TaggedContainer>> = emptyList()
@@ -87,9 +97,26 @@ class ReporterService(
         fun read(group: List<TaggedContainer>, itemsOfInterest: Set<String>): Map<Long, ContainerSweep.Reading>
     }
 
+    /** Which stamped shulker boxes online players carry. The seam that keeps players out of tests. */
+    fun interface CarriedReader {
+        fun scan(): Sighting
+    }
+
     /** Called every server tick, on the server thread. */
-    fun tick(server: MinecraftServer) =
-        tick { group, wanted -> ContainerSweep.readGroup(server, group, wanted) }
+    fun tick(server: MinecraftServer) = tick(
+        read = { group, wanted -> ContainerSweep.readGroup(server, group, wanted) },
+        carried = { ShulkerStamp.scan(server) },
+    )
+
+    /**
+     * The tagged shulker box at a position, for stamping it as it drops ([ShulkerStamp.onDrops]).
+     * Called from block breaking, which is on the server thread like everything else here.
+     */
+    fun taggedShulkerAt(dimension: String, pos: BlockPos): Long? =
+        tags.firstOrNull {
+            it.kind == ContainerKind.SHULKER_BOX && it.dimension == dimension &&
+                it.x == pos.x && it.y == pos.y && it.z == pos.z
+        }?.id
 
     /**
      * The loop itself, with world access injected.
@@ -99,13 +126,13 @@ class ReporterService(
      * the bugs live, not in the block reads. So the reads come in through [GroupReader] and
      * `ReporterServiceTest` drives this against a loopback webapp.
      */
-    internal fun tick(read: GroupReader) {
+    internal fun tick(read: GroupReader, carried: CarriedReader = CarriedReader { Sighting.NONE }) {
         while (true) (inbox.poll() ?: break).run()
 
         val instant = now()
         if (shouldPullTags(instant)) pullTags(instant)
         if (!passActive && shouldStartPass(instant)) startPass(instant)
-        if (passActive) advancePass(read)
+        if (passActive) advancePass(read, carried)
         if (pushDue && !pushInFlight) push(now())
     }
 
@@ -147,9 +174,15 @@ class ReporterService(
                                 dimension = it.dimension,
                                 x = it.x, y = it.y, z = it.z,
                                 groupKey = it.groupKey,
+                                kind = it.kind,
                             )
                         },
                         result.value.itemsOfInterest.associate { it.projectId to it.itemIds.toSet() },
+                        result.value.containers.mapNotNull { tag ->
+                            val by = tag.carriedBy
+                            if (tag.state != ContainerSweep.STATE_IN_TRANSIT || by == null) null
+                            else tag.id to Carrier(by.uuid, by.name)
+                        }.toMap(),
                     )
                     result is ApiResult.Error ->
                         fail("Could not pull container tags", "${result.status} ${result.code}")
@@ -160,7 +193,11 @@ class ReporterService(
     }
 
     /** Applied on the server thread, from [inbox]. */
-    private fun applyTags(pulled: List<TaggedContainer>, pulledInterest: Map<Int, Set<String>>) {
+    private fun applyTags(
+        pulled: List<TaggedContainer>,
+        pulledInterest: Map<Int, Set<String>>,
+        pulledCarriers: Map<Long, Carrier>,
+    ) {
         // A changed tag list starts a pass on the next tick rather than waiting out the interval.
         // Without this the very first sweep is a whole `sweep_seconds` after boot — the tag list
         // arrives *after* the boot pass has already run against an empty one — so someone who has
@@ -177,6 +214,7 @@ class ReporterService(
 
         tags = pulled
         interest = pulledInterest
+        rememberedCarriers = pulledCarriers
         groups = ContainerSweep.groupsOf(pulled)
         if (groupCursor > groups.size) groupCursor = groups.size
 
@@ -222,14 +260,32 @@ class ReporterService(
      * With 100 tagged containers and the default 8 reads per tick a pass takes about 13 ticks —
      * under a second, and invisible in tick time. Then nothing until the next interval.
      */
-    private fun advancePass(read: GroupReader) {
+    private fun advancePass(read: GroupReader, carried: CarriedReader) {
         var budget = config.readsPerTick
+        // Players are looked at once per tick, and only in a tick that reaches a shulker box — so
+        // the position and the inventories are read in the same tick, and a box picked up between
+        // the two looks is not briefly in neither place.
+        var sighting: Sighting? = null
         while (budget > 0 && groupCursor < groups.size) {
             val group = groups[groupCursor++]
             // The union of the members' interests: a group is one inventory, and whichever member
             // ends up holding the counts, every member's project should get what it asked for.
             val wanted = group.flatMapTo(mutableSetOf()) { interest[it.projectId].orEmpty() }
-            read.read(group, wanted).forEach { (id, reading) -> pending[id] = reading }
+            val readings = read.read(group, wanted)
+            for (member in group) {
+                val reading = if (member.kind == ContainerKind.SHULKER_BOX) {
+                    CarriedShulkers.resolve(
+                        tagId = member.id,
+                        position = readings[member.id],
+                        sighting = sighting ?: carried.scan().also { sighting = it },
+                        lastCarrier = lastCarrierOf(member.id),
+                        interest = interest[member.projectId].orEmpty(),
+                    )
+                } else {
+                    readings[member.id]
+                }
+                if (reading != null) pending[member.id] = reading
+            }
             budget -= group.size
         }
         if (groupCursor >= groups.size) {
@@ -237,6 +293,12 @@ class ReporterService(
             lastPassEndedAt = now()
             pushDue = true
         }
+    }
+
+    /** Who had this box at its last `in_transit` reading — this reporter's, else the webapp's. */
+    private fun lastCarrierOf(tagId: Long): Carrier? {
+        val last = pending[tagId] ?: return rememberedCarriers[tagId]
+        return last.carrier
     }
 
     // ── The push ───────────────────────────────────────────────────────────────
@@ -262,6 +324,7 @@ class ReporterService(
                     state = reading.state,
                     seenAt = instant.toString(),
                     items = reading.counts.map { ReportedItemDto(it.key, it.value) },
+                    carriedBy = reading.carrier?.let { CarrierDto(it.uuid, it.name) },
                 )
             },
         )

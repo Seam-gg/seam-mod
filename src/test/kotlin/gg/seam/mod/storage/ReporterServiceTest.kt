@@ -55,6 +55,9 @@ class ReporterServiceTest {
     private val groupsRead = mutableListOf<List<Long>>()
     private val interestSeen = mutableListOf<Set<String>>()
 
+    /** Who is online and what stamped boxes they carry, as the fake world reports it. */
+    @Volatile private var sighting = Sighting.NONE
+
     private val reader = ReporterService.GroupReader { group, wanted ->
         groupsRead += group.map { it.id }
         interestSeen += wanted
@@ -110,21 +113,25 @@ class ReporterServiceTest {
     private fun ReporterService.tickUntil(what: String, condition: () -> Boolean) {
         repeat(400) {
             if (condition()) return
-            tick(reader)
+            tick(reader) { sighting }
             Thread.sleep(5)
         }
         if (!condition()) throw AssertionError("timed out waiting for $what")
     }
 
-    private fun tag(id: Long, projectId: Int = 7, groupKey: String = "$id,64,0") =
-        TaggedContainer(id, projectId, "minecraft:overworld", id.toInt(), 64, 0, groupKey)
+    private fun tag(id: Long, projectId: Int = 7, groupKey: String = "$id,64,0", kind: String = "chest") =
+        TaggedContainer(id, projectId, "minecraft:overworld", id.toInt(), 64, 0, groupKey, kind)
+
+    /** Extra fields for one tag in [tagsResponse] — the webapp's state, as a restart would find it. */
+    private val tagExtras = mutableMapOf<Long, String>()
 
     private fun tagsResponse(vararg tags: TaggedContainer, items: List<String> = listOf("minecraft:iron_ingot")) =
         """
         {"world_id":1,
          "containers":[${tags.joinToString(",") {
             """{"id":${it.id},"project_id":${it.projectId},"dimension":"${it.dimension}",
-                "x":${it.x},"y":${it.y},"z":${it.z},"group_key":"${it.groupKey}","kind":"chest"}"""
+                "x":${it.x},"y":${it.y},"z":${it.z},"group_key":"${it.groupKey}","kind":"${it.kind}"
+                ${tagExtras[it.id]?.let { extra -> ",$extra" }.orEmpty()}}"""
         }}],
          "items_of_interest":[${tags.map { it.projectId }.distinct().joinToString(",") { p ->
             """{"project_id":$p,"item_ids":[${items.joinToString(",") { "\"$it\"" }}]}"""
@@ -219,6 +226,68 @@ class ReporterServiceTest {
         clock = clock.plus(Duration.ofSeconds(31))
         service.tickUntil("the next push") { pushes.isNotEmpty() }
         assertTrue(!pushes.last().contains("\"missing\""), "missing was resent: ${pushes.last()}")
+    }
+
+    // ── Carried shulker boxes (MCO-548) ────────────────────────────────────────
+
+    private val even = Carrier("uuid-even", "Even")
+
+    @Test
+    fun `a carried shulker box is pushed as in transit, with what is in it and who has it`() {
+        tagsBody = tagsResponse(tag(1, kind = ContainerKind.SHULKER_BOX))
+        // The storage chunk is unloaded — the carrier has walked off — so the position says nothing.
+        sighting = Sighting(setOf(even.uuid), mapOf(1L to CarriedBox(1, even, mapOf("minecraft:iron_ingot" to 12L))))
+
+        val service = service()
+        service.tickUntil("the in_transit report") { pushes.any { it.contains("\"in_transit\"") } }
+
+        val body = pushes.first { it.contains("\"in_transit\"") }
+        assertTrue(body.contains("\"count\":12"), "the carried contents were not pushed: $body")
+        assertTrue(body.contains("\"carried_by\":{\"uuid\":\"uuid-even\",\"name\":\"Even\"}"), body)
+    }
+
+    @Test
+    fun `a chest is never looked for on a player, so a broken one still reads as missing`() {
+        tagsBody = tagsResponse(tag(1, kind = ContainerKind.CHEST))
+        readings[1] = ContainerSweep.Reading(1, ContainerSweep.STATE_MISSING, emptyMap())
+        // Even if a stamp with its id somehow turned up on a player — a chest's contents spill on
+        // the floor when it breaks, so they really are gone from it.
+        sighting = Sighting(setOf(even.uuid), mapOf(1L to CarriedBox(1, even, mapOf("minecraft:iron_ingot" to 12L))))
+
+        service().tickUntil("the missing report") { pushes.any { it.contains("\"missing\"") } }
+
+        assertTrue(pushes.none { it.contains("\"in_transit\"") })
+    }
+
+    @Test
+    fun `after a restart, a box whose carrier is offline is left alone rather than reported missing`() {
+        // The webapp remembers the carrier; this reporter has just started and remembers nothing.
+        tagExtras[1] = """"state":"in_transit","carried_by":{"uuid":"uuid-even","name":"Even"}"""
+        tagsBody = tagsResponse(tag(1, kind = ContainerKind.SHULKER_BOX))
+        readings[1] = ContainerSweep.Reading(1, ContainerSweep.STATE_MISSING, emptyMap())
+        sighting = Sighting(online = emptySet(), boxes = emptyMap())
+
+        val service = service()
+        service.tickUntil("a pass to read the box") { groupsRead.isNotEmpty() }
+        val before = pushes.size
+        clock = clock.plus(Duration.ofSeconds(31))
+        service.tickUntil("a push after it") { pushes.size > before }
+
+        assertTrue(pushes.none { it.contains("\"missing\"") }, "an offline carrier's box went missing: $pushes")
+    }
+
+    @Test
+    fun `a carrier who is online without the box turns it missing`() {
+        tagsBody = tagsResponse(tag(1, kind = ContainerKind.SHULKER_BOX))
+        sighting = Sighting(setOf(even.uuid), mapOf(1L to CarriedBox(1, even, mapOf("minecraft:iron_ingot" to 12L))))
+
+        val service = service()
+        service.tickUntil("the in_transit report") { pushes.any { it.contains("\"in_transit\"") } }
+
+        // Placed somewhere untagged, or put in a chest: still online, no longer carrying it.
+        sighting = Sighting(setOf(even.uuid), emptyMap())
+        clock = clock.plus(Duration.ofSeconds(31))
+        service.tickUntil("the missing report") { pushes.any { it.contains("\"missing\"") } }
     }
 
     @Test

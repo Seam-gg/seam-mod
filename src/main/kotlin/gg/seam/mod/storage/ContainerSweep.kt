@@ -3,6 +3,7 @@ package gg.seam.mod.storage
 import net.minecraft.block.ChestBlock
 import net.minecraft.component.DataComponentTypes
 import net.minecraft.inventory.Inventory
+import net.minecraft.item.ItemStack
 import net.minecraft.registry.Registries
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.world.ServerWorld
@@ -21,16 +22,21 @@ import net.minecraft.util.math.ChunkPos
  */
 object ContainerSweep {
 
-    /** What one container looked like when the sweep reached it. */
+    /**
+     * What one container looked like when the sweep reached it. [carrier] is set only for
+     * [STATE_IN_TRANSIT] — see [CarriedShulkers].
+     */
     data class Reading(
         val tagId: Long,
         val state: String,
         val counts: Map<String, Long>,
+        val carrier: Carrier? = null,
     )
 
     const val STATE_OK = "ok"
     const val STATE_UNREADABLE = "unreadable"
     const val STATE_MISSING = "missing"
+    const val STATE_IN_TRANSIT = "in_transit"
 
     /**
      * Reads one **group** — the set of tags naming a single physical inventory — **on the server
@@ -170,13 +176,29 @@ object ContainerSweep {
             val stack = inventory.getStack(slot)
             if (stack.isEmpty) continue
             add(idOf(stack.item), stack.count)
-
-            stack.get(DataComponentTypes.CONTAINER)?.streamNonEmpty()?.forEach { nested ->
-                if (!nested.isEmpty) add(idOf(nested.item), nested.count)
-            }
+            forEachNested(stack) { nested -> add(idOf(nested.item), nested.count) }
         }
         return counts
     }
+
+    /**
+     * Everything inside one shulker box item, by item id, unfiltered — a carried box is read from
+     * its item rather than from a block ([ShulkerStamp.scan]), and interest is applied once the
+     * reporter knows which project the box belongs to.
+     */
+    fun contentsOf(stack: ItemStack): Map<String, Long> {
+        val counts = mutableMapOf<String, Long>()
+        forEachNested(stack) { nested ->
+            val id = idOf(nested.item)
+            counts[id] = (counts[id] ?: 0L) + nested.count.toLong()
+        }
+        return counts
+    }
+
+    private fun forEachNested(stack: ItemStack, action: (ItemStack) -> Unit) =
+        stack.get(DataComponentTypes.CONTAINER)?.streamNonEmpty()?.forEach { nested ->
+            if (!nested.isEmpty) action(nested)
+        }
 
     private fun idOf(item: net.minecraft.item.Item): String = Registries.ITEM.getId(item).toString()
 
@@ -208,6 +230,8 @@ data class TaggedContainer(
     val y: Int,
     val z: Int,
     val groupKey: String,
+    /** The webapp's [ContainerKind] for the tag; a `shulker_box` can be carried ([CarriedShulkers]). */
+    val kind: String = "",
 ) {
     fun dimensionKey(): net.minecraft.registry.RegistryKey<net.minecraft.world.World> =
         net.minecraft.registry.RegistryKey.of(

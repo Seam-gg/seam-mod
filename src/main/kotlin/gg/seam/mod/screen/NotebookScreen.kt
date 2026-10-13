@@ -565,6 +565,8 @@ class NotebookScreen(private var projectIndex: Int = 0) : Screen(Text.literal("S
         val (state, colour) = when (container.state) {
             "ok" -> "seen ${container.lastSeenAt.shortTime()}" to SeamPalette.MUTED
             "missing" -> "gone" to SeamPalette.RED
+            // Not a warning: the stock still counts. The name is for whoever is looking for it.
+            "in_transit" -> "with ${container.carriedBy?.name ?: "a player"}" to SeamPalette.MUTED
             else -> "never read" to SeamPalette.LAPIS
         }
 
