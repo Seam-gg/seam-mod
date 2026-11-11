@@ -10,7 +10,7 @@ container tagging, resource reconciliation, and task check-off.
 - **License:** [MIT](LICENSE)
 
 > **NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.**
-> Seam and Seam Notebook are made and maintained by Even Gultvedt.
+> Seam and Seam Notebook are made and maintained by Even Gultvedt — [contact@seam.gg](mailto:contact@seam.gg).
 
 ## Develop
 
