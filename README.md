@@ -7,6 +7,10 @@ container tagging, resource reconciliation, and task check-off.
 - **Distribution:** one jar, two halves (since 0.3.0) — the notebook on the client, and an optional
   reporter on the server that reads tagged containers. Either side runs without the other.
 - **Mod id:** `seam_notebook` · **Modrinth:** [`seam-notebook`](https://modrinth.com/mod/seam-notebook)
+- **License:** [MIT](LICENSE)
+
+> **NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.**
+> Seam and Seam Notebook are made and maintained by Even Gultvedt.
 
 ## Develop
 
@@ -103,3 +107,9 @@ the version bump, the changelog format, and the tag push.
 - **`docs/v1-spec.md`** — the originating v1 spec. Historical; parts are superseded.
 
 Tracked in Linear under the **Seam Companion Mod** project (team `Mcorg`).
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). The reporter reads a server's tagged containers and sends what it
+counts to the Seam webapp; the source is here so a server operator can check exactly what that is
+before installing it.
