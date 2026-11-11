@@ -107,6 +107,12 @@ tasks.processResources {
     }
 }
 
+// MIT requires the notice to travel with every copy, and the jar is the copy players get.
+// Suffixed so it cannot collide with another mod's LICENSE when a jar is unpacked or shaded.
+tasks.jar {
+    from("LICENSE") { rename { "${it}_seam_notebook" } }
+}
+
 java {
     withSourcesJar()
     sourceCompatibility = JavaVersion.VERSION_21
